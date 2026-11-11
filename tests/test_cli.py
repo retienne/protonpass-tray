@@ -403,10 +403,15 @@ class TheClientsViewGoesStale(Harness):
         self.addCleanup(patcher.stop)
 
     def test_a_stale_not_locked_does_not_become_unlocked(self):
+        """The point this was written for: never record UNLOCKED on the client's word. It
+        asserted EXIT_LOCKED for an hour, until the state turned out to be a dead end worth
+        naming - see TheDeadlockHasAName - so the code is now 13 and the cache still says
+        locked, which is what a face needs either way."""
         self.set_stub(has_lock=True, locked=True, idle_timeout=300, code="1234")
         with unittest.mock.patch.dict("os.environ", {"STUB_STALE_CLIENT": "1"}):
             code = self.run_cli("unlock")
-        self.assertEqual(code, cli.EXIT_LOCKED)
+        self.assertEqual(code, cli.EXIT_WEDGED)
+        self.assertNotEqual(code, cli.EXIT_OK)
         self.assertIs(self.state.load().status, Lock.LOCKED)
 
     def test_a_genuine_not_locked_is_still_a_success(self):
@@ -414,6 +419,52 @@ class TheClientsViewGoesStale(Harness):
         self.set_stub(has_lock=True, locked=False, idle_timeout=300, code="1234")
         self.assertEqual(self.run_cli("unlock"), cli.EXIT_OK)
         self.assertIs(self.state.load().status, Lock.UNLOCKED)
+
+
+class TheDeadlockHasAName(Harness):
+    """Six commands, no way out - 2026-11-11, 22:08 to 23:29 on a live session.
+
+    The server had the session locked; pass-cli's own copy of it did not. So `vault list` and
+    `create-lock` were refused on the server's word ("Session is locked"), while `unlock` and
+    `remove-lock` were refused on the client's ("Error: Session is not locked") and `lock` on
+    the same ("Session has no lock"). Every exit gated by whichever side disagreed, and only
+    `pass-cli logout --force && pass-cli login` cleared it.
+
+    Relaying any one of those sentences is useless: each contradicts what the operator can
+    see. This program probes with `vault list` AND runs the lock commands, so it is the only
+    thing that sees both halves and can say what is actually wrong.
+    """
+
+    def setUp(self):
+        super().setUp()
+        patcher = unittest.mock.patch.object(self.prompt, "ask", return_value="1234")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_unlock_names_it(self):
+        self.set_stub(has_lock=True, locked=True, idle_timeout=300, code="1234")
+        with unittest.mock.patch.dict("os.environ", {"STUB_STALE_CLIENT": "1"}):
+            self.assertEqual(self.run_cli("unlock"), cli.EXIT_WEDGED)
+        self.assertIn("logout --force", self.err)
+
+    def test_remove_lock_names_it(self):
+        self.set_stub(has_lock=True, locked=True, idle_timeout=300, code="1234")
+        with unittest.mock.patch.dict("os.environ", {"STUB_STALE_CLIENT": "1"}):
+            self.assertEqual(self.run_cli("remove-lock"), cli.EXIT_WEDGED)
+        self.assertIn("logout --force", self.err)
+
+    def test_it_is_not_claimed_for_an_ordinary_lockless_session(self):
+        """The same client wording on a session that really has no lock must stay ordinary
+        advice - otherwise every new user is told to log out."""
+        self.set_stub(has_lock=False, locked=False)
+        self.assertEqual(self.run_cli("lock"), cli.EXIT_NO_LOCK)
+        self.assertIn("setup", self.err)
+        self.assertNotIn("logout", self.err)
+
+    def test_nor_for_a_session_that_is_merely_unlocked(self):
+        self.set_stub(has_lock=True, locked=False, idle_timeout=300, code="1234")
+        self.assertEqual(self.run_cli("unlock"), cli.EXIT_OK)
+        self.assertNotIn("logout", self.err)
 
 
 if __name__ == "__main__":

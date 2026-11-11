@@ -21,6 +21,10 @@ EXIT_NO_PASS_CLI = 4
 EXIT_LOCKED = 10
 EXIT_NO_LOCK = 11
 EXIT_NO_SESSION = 12
+#: pass-cli's own copy of the session disagrees with the server about the lock, and every way
+#: out is gated on whichever side disagrees. Its own place in the interface because no code and
+#: no retry helps: a face must stop offering the field and say what does.
+EXIT_WEDGED = 13
 
 _CODE_OF = {
     Lock.UNLOCKED: EXIT_OK,
@@ -166,12 +170,41 @@ def _timeout_for_unlock() -> int | None:
         return None
 
 
+#: What to do about it. The only route found on 2026-11-11, after lock, unlock, remove-lock and
+#: create-lock had each been refused.
+WEDGED = (
+    "pass-cli has lost the lock the server is still enforcing, so none of its lock "
+    "commands will run. Recover with a fresh session: pass-cli logout --force && pass-cli login"
+)
+
+
+def _wedged() -> Outcome | None:
+    """The deadlock of 2026-11-11, if that is what this is.
+
+    pass-cli answers a lock command out of its OWN copy of the session, and that copy does not
+    learn about a lock the SERVER engaged on idleness. Once the two disagree there is no way
+    through: `unlock` and `remove-lock` refuse with "Session is not locked", `lock` with
+    "Session has no lock", and `create-lock` with "Session is locked" - each gated by whichever
+    side disagrees. Six commands, no exit; only a fresh session clears it.
+
+    This program is the only thing that sees both halves, because it probes with `vault list`
+    AND runs the lock commands. So it is the only thing that can name the situation instead of
+    relaying a sentence that contradicts what the operator can see on screen.
+    """
+    st = _reconciled()
+    if st is None or st.status is not Lock.LOCKED:
+        return None
+    return Outcome(EXIT_WEDGED, WEDGED, is_error=True, state=st)
+
+
 def lock() -> Outcome:
     result = passcli.run(["session", "lock"])
     if result.verdict in (Verdict.OK, Verdict.LOCKED):
         st = state.record(Lock.LOCKED, source="protonpass-tray lock")
         return Outcome(EXIT_OK, st.describe(), state=st)
     if result.verdict is Verdict.NO_LOCK:
+        if wedged := _wedged():
+            return wedged
         st = state.record(Lock.NO_LOCK, source="protonpass-tray lock", idle_timeout=0)
         return Outcome(
             EXIT_NO_LOCK,
@@ -202,6 +235,8 @@ def unlock(code: str) -> Outcome:
         # found out. Recording "unlocked" on its word is the same mistake as believing `info`,
         # and it would have had every face show a green icon over a session that could not
         # read a single secret. So probe, and report what the probe says.
+        if wedged := _wedged():
+            return wedged
         st = _reconciled()
         if st is None:
             st = state.record(
@@ -216,6 +251,8 @@ def unlock(code: str) -> Outcome:
             state=st,
         )
     if result.verdict is Verdict.NO_LOCK:
+        if wedged := _wedged():
+            return wedged
         st = state.record(Lock.NO_LOCK, source="protonpass-tray unlock", idle_timeout=0)
         return Outcome(EXIT_NO_LOCK, "This session has no lock.", is_error=True, state=st)
     if result.verdict is Verdict.WRONG_CODE:
@@ -282,7 +319,14 @@ def remove_lock(code: str) -> Outcome:
     if result.verdict is Verdict.OK:
         st = state.record(Lock.NO_LOCK, source="protonpass-tray remove-lock", idle_timeout=0)
         return Outcome(EXIT_OK, "Lock removed. The session is no longer gated by a code.", state=st)
+    if result.verdict in (Verdict.NOT_LOCKED, Verdict.NO_LOCK):
+        if wedged := _wedged():
+            return wedged
+        st = state.record(Lock.NO_LOCK, source="pass-cli: no lock to remove", idle_timeout=0)
+        return Outcome(EXIT_NO_LOCK, "This session has no lock to remove.", state=st)
     if result.verdict is Verdict.WRONG_CODE:
+        if wedged := _wedged():
+            return wedged
         return Outcome(EXIT_LOCKED, "That code was not accepted.", is_error=True)
     # Either state means the lock is still there, so neither answers a removal.
     return _unreadable(

@@ -18,10 +18,11 @@ test can assert that something made no call at all.
                        fallback at all, since the pty is tried first and normally wins.
   STUB_FAIL=<message>  fail a `session` subcommand after reading the code, with one of
                        pass-cli's own failure lines (e.g. "Error locking session").
-  STUB_STALE_CLIENT=1  the client's local view says unlocked while the server enforces the
-                       lock: `session unlock` answers "Session is not locked" and `info`
-                       denies the lock, but `vault list` still refuses. Seen on a live
-                       session on 2026-11-11, after the server auto-locked on idleness.
+  STUB_STALE_CLIENT=1  the client's local view has lost the lock the server is enforcing.
+                       `info` denies it, `unlock` and `remove-lock` answer "Session is not
+                       locked", `lock` answers "Session has no lock" - and `vault list` and
+                       `create-lock` still refuse because the SERVER has it locked. The exact
+                       deadlock measured on a live session on 2026-11-11, 22:08 to 23:29.
 """
 
 import json
@@ -185,6 +186,12 @@ if args[:2] == ["session", "create-lock"]:
     raise SystemExit(0)
 
 if args[:2] == ["session", "lock"]:
+    if os.environ.get("STUB_STALE_CLIENT") == "1":
+        print(
+            "Session has no lock. Create one first with `pass-cli session create-lock`",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
     if not state["has_lock"]:
         print(
             "Session has no lock. Create one first with `pass-cli session create-lock`",
@@ -218,6 +225,12 @@ if args[:2] == ["session", "unlock"]:
     raise SystemExit(0)
 
 if args[:2] == ["session", "remove-lock"]:
+    if os.environ.get("STUB_STALE_CLIENT") == "1":
+        # It reads the code first and refuses anyway, which is what made this a dead end: the
+        # operator types the right PIN and is told the session is not locked.
+        read_code()
+        print("Error: Session is not locked", file=sys.stderr)
+        raise SystemExit(1)
     if read_code() != state.get("code", CODE):
         print("Error removing session lock", file=sys.stderr)
         raise SystemExit(1)

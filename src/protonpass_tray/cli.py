@@ -6,6 +6,7 @@ The exit codes are the interface; they are what lets a hook decide without parsi
     10  locked - a code is needed
     11  no lock is configured on this session (run `setup`)
     12  no Proton Pass session at all (run `pass-cli login`)
+    13  pass-cli and the server disagree about the lock; only a fresh session clears it
     3   pass-cli said something this version does not recognise
     4   pass-cli is not installed
     2   usage
@@ -35,6 +36,7 @@ from .actions import (
     EXIT_OK,
     EXIT_UNRECOGNISED,
     EXIT_USAGE,
+    EXIT_WEDGED,
 )
 
 __all__ = [
@@ -42,6 +44,7 @@ __all__ = [
     "EXIT_NO_LOCK",
     "EXIT_NO_PASS_CLI",
     "EXIT_NO_SESSION",
+    "EXIT_WEDGED",
     "EXIT_OK",
     "EXIT_UNRECOGNISED",
     "EXIT_USAGE",
