@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "protonpass-tray"
+version = "0.2.0"
+description = "Unofficial tray icon and unlock prompt for the Proton Pass CLI session lock"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [{ name = "Etienne Reichenbach" }]
+keywords = ["proton", "proton-pass", "pass-cli", "tray", "statusnotifieritem", "session-lock"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Desktop Environment",
+    "Topic :: Security",
+]
+# The CLI half has NO dependencies on purpose: it must install and run on a headless box,
+# where it is what the shell hooks call. Qt is an extra, needed only by the tray.
+dependencies = []
+
+[project.optional-dependencies]
+tray = ["PyQt6>=6.4"]
+
+[project.urls]
+Homepage = "https://github.com/retienne/protonpass-tray"
+Issues = "https://github.com/retienne/protonpass-tray/issues"
+Changelog = "https://github.com/retienne/protonpass-tray/blob/main/CHANGELOG.md"
+
+[project.scripts]
+protonpass-tray = "protonpass_tray.cli:main"
+
+[tool.hatch.build.targets.sdist]
+# Distro packagers build from the sdist: it must carry the data files and the tests, so a
+# packager can install the unit and the icons and run the suite without cloning git.
+include = ["src/", "tests/", "data/", "README.md", "LICENSE", "CHANGELOG.md", "pyproject.toml"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

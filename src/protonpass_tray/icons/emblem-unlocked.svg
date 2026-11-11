@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The open counterpart of emblem-locked.svg; the shackle is lifted and swung clear, which
+     is the only difference that survives at twelve pixels. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <circle cx="12" cy="12" r="11" fill="#1b1d20" stroke="#ffffff" stroke-width="2"/>
+  <path d="M8.4 10.6V8.4a3.6 3.6 0 0 1 7.2 0" fill="none" stroke="#ffffff" stroke-width="2.4"/>
+  <rect x="4.8" y="10.4" width="10.8" height="7.6" rx="1.6" fill="#ffffff"/>
+</svg>

@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=Proton Pass session lock
+GenericName=Session lock tray
+Comment=Lock and unlock the Proton Pass CLI session with a code
+Exec=protonpass-tray tray
+Icon=io.github.retienne.protonpass-tray
+Terminal=false
+Categories=Utility;Security;System;
+Keywords=proton;pass;password;lock;unlock;session;tray;
+StartupNotify=false
+# Shown in the application menu AND usable as an autostart entry. The systemd user unit is
+# the better way in on a systemd desktop; this is the fallback where there is no user manager.
+X-GNOME-Autostart-enabled=true

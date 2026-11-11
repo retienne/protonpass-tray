@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- An overlay badge, not a glyph: it is drawn over an application icon at roughly half its
+     width, so on a 22px panel this is about 12px across. Everything in it is sized for that -
+     a filled disc for contrast against whatever is underneath, a white ring so it also reads
+     on a light panel, and a shackle thick enough to survive the scaling. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <circle cx="12" cy="12" r="11" fill="#1b1d20" stroke="#ffffff" stroke-width="2"/>
+  <path d="M8.4 11V9.2a3.6 3.6 0 0 1 7.2 0V11" fill="none" stroke="#ffffff" stroke-width="2.4"/>
+  <rect x="6.6" y="10.8" width="10.8" height="7.6" rx="1.6" fill="#ffffff"/>
+</svg>

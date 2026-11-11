@@ -1,0 +1,19 @@
+{
+    "KPackageStructure": "Plasma/Applet",
+    "KPlugin": {
+        "Authors": [
+            {
+                "Name": "Etienne Reichenbach"
+            }
+        ],
+        "Category": "System Information",
+        "Description": "Lock and unlock the Proton Pass CLI session with a code",
+        "Icon": "object-locked",
+        "Id": "io.github.retienne.protonpass-tray",
+        "License": "MIT",
+        "Name": "Proton Pass session lock",
+        "Version": "0.2.0",
+        "Website": "https://github.com/retienne/protonpass-tray"
+    },
+    "X-Plasma-API-Minimum-Version": "6.0"
+}

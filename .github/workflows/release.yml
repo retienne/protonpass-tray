@@ -1,0 +1,39 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update && sudo apt-get install -y zip just
+      - run: pipx run build
+      # The two store artefacts. Neither store has a usable upload API, so these are built
+      # here and uploaded by hand - the point is that what gets uploaded is exactly what the
+      # tag contains, rather than whatever was in a working copy that day.
+      - run: just plasmoid-zip gnome-zip
+      # A checksum file beside each artefact, because that is what a pinned installer needs:
+      # Ansible's get_url, a PKGBUILD's sha256sums, an RPM spec's source. Publishing the
+      # artefact without one forces every packager to invent their own trust path.
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS
+          for f in *.tar.gz *.whl; do sha256sum "$f" | cut -d' ' -f1 > "$f.sha256"; done
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*
+          generate_release_notes: true
+  # Uncomment once a PyPI trusted publisher is configured for this repository
+  # (https://docs.pypi.org/trusted-publishers/). No API token is then needed.
+  #    - uses: pypa/gh-action-pypi-publish@release/v1

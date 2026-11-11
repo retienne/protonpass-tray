@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.retienne.protonpass-tray</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Proton Pass session lock</name>
+  <summary>Lock and unlock the Proton Pass CLI session with a code</summary>
+  <description>
+    <p>
+      The Proton Pass CLI can gate an authenticated session behind a short lock code that
+      re-arms itself after a configurable idle period. This is a tray icon and an unlock
+      prompt for that lock, plus a small command line the same machine's scripts can call.
+    </p>
+    <p>
+      It is a front-end only: it runs the pass-cli binary and never holds a credential of its
+      own. The lock code is read straight into pass-cli and dropped.
+    </p>
+    <p>
+      This is an unofficial project. It is not affiliated with, endorsed by, or supported by
+      Proton AG.
+    </p>
+  </description>
+  <developer id="io.github.retienne">
+    <name>Etienne Reichenbach</name>
+  </developer>
+  <launchable type="desktop-id">io.github.retienne.protonpass-tray.desktop</launchable>
+  <url type="homepage">https://github.com/retienne/protonpass-tray</url>
+  <url type="bugtracker">https://github.com/retienne/protonpass-tray/issues</url>
+  <provides>
+    <binary>protonpass-tray</binary>
+  </provides>
+  <categories>
+    <category>Utility</category>
+    <category>Security</category>
+  </categories>
+  <keywords>
+    <keyword>proton</keyword>
+    <keyword>password</keyword>
+    <keyword>session</keyword>
+    <keyword>lock</keyword>
+  </keywords>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-11-11">
+      <description>
+        <p>First release: the command line half, with the tray to follow.</p>
+      </description>
+    </release>
+  </releases>
+</component>

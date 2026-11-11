@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">
+  <!-- Nothing has been established yet: outline only, no fill, so it reads as "not known". -->
+  <g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" opacity=".55">
+    <path d="M7.4 10V7.6a3.6 3.6 0 0 1 7.2 0V10"/>
+    <rect x="4.6" y="10" width="12.8" height="8.4" rx="1.6"/>
+  </g>
+</svg>

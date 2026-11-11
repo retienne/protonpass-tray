@@ -1,0 +1,14 @@
+{
+    "uuid": "protonpass-tray@retienne.github.io",
+    "name": "Proton Pass session lock",
+    "description": "Lock and unlock the Proton Pass CLI session with a code, from the panel. Unofficial; not affiliated with Proton AG. Needs the protonpass-tray command: pipx install protonpass-tray",
+    "version-name": "0.2.0",
+    "shell-version": [
+        "45",
+        "46",
+        "47",
+        "48",
+        "49"
+    ],
+    "url": "https://github.com/retienne/protonpass-tray"
+}

@@ -1,0 +1,76 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      # The suite needs nothing installed: stdlib unittest, and a stub pass-cli in tests/.
+      # That is deliberate - a distro packager must be able to run it in a clean build root.
+      - run: PYTHONPATH=src:tests python -m unittest discover -s tests -t tests -v
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pipx run ruff check .
+      - run: pipx run ruff format --check .
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pipx run build
+      - run: pipx run twine check dist/*
+      # The AppStream metadata is what GNOME Software, Discover and Flathub read; an invalid
+      # file is the kind of thing nobody notices until a packaging review bounces.
+      - run: sudo apt-get update && sudo apt-get install -y appstream desktop-file-utils
+      - run: appstreamcli validate --no-net data/*.metainfo.xml
+      - run: desktop-file-validate data/*.desktop
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  frontends:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The metadata of both front-ends is checked by the unittest suite (tests/
+      # test_frontends.py). What it cannot check is whether the JavaScript parses, and a
+      # syntax error there is a dead panel icon rather than a failed command.
+      - run: sudo apt-get update && sudo apt-get install -y zip just
+      # Syntax only, and deliberately not with gjs: `gjs -c` evaluates as a script and
+      # rejects `import` outright, while `gjs -m` would RUN the file and fail on the
+      # resource:///org/gnome/shell imports that only exist inside gnome-shell. Node checks
+      # ES module syntax without executing anything, which is the whole of what is checkable
+      # off a GNOME session.
+      - run: cp gnome-extension/extension.js extension.mjs && node --check extension.mjs
+      # The QML has no equivalent: resolving the Plasma imports needs a Plasma install, so
+      # the widget is checked by hand (just plasmoid-install) and by the metadata tests.
+      - run: just plasmoid-zip gnome-zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontends
+          path: dist/
