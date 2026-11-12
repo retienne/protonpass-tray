@@ -9,7 +9,9 @@ invisible rather than noisy:
     This module only ever classifies it.
   * An output this module does not recognise is `Verdict.UNKNOWN`, never a success. The
     strings below are read off pass-cli 2.5.1 and are not a stable interface; a release that
-    reworded them must turn this module uncertain, not confidently wrong.
+    reworded them must turn this module uncertain, not confidently wrong. `just check-strings`
+    is what tells you which it did - it reads the table out of this module and looks for every
+    literal in the binary. 2.7.0 passes it unchanged.
 """
 
 from __future__ import annotations
@@ -41,7 +43,8 @@ def binary() -> str:
 
 DEFAULT_TIMEOUT = 30
 
-# pass-cli 2.5.1. Compared case-insensitively against stdout+stderr.
+# pass-cli 2.5.1, every literal still present in 2.7.0. Compared case-insensitively
+# against stdout+stderr.
 _LOCKED = "session is locked. please unlock your session"
 _NO_LOCK = "session has no lock"
 _NOT_LOCKED = "session is not locked"

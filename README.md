@@ -167,7 +167,8 @@ so a key added in the app will not appear until you unlock.
 **What the timeout counts, settled.** pass-cli's help for `--idle-timeout` says "time before
 the session **auto-unlocks**", which read literally would make the lock protection for one
 timeout rather than a standing gate. Every other string in the binary says the opposite, and
-they outnumber it — all four are its own, read with `strings` on 2.5.1:
+they outnumber it — all four are its own, read with `strings` on 2.5.1 and unchanged in
+2.7.0:
 
 | Where | What it says |
 | --- | --- |

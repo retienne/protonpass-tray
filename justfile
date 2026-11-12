@@ -37,6 +37,14 @@ lint:
 format:
     ruff format .
 
+# Every verdict this engine reaches is a match against pass-cli's own words, which are not a
+# promised interface. The script says what it does and why the test suite cannot do it instead
+# (it needs the real binary, and a test that skips itself for want of one reports OK having
+# checked nothing). Run it after upgrading pass-cli, before trusting a verdict from it.
+# Check an installed pass-cli still says what the classifier matches on
+check-strings *binary:
+    @{{ python }} tools/check_pass_cli_strings.py {{ binary }}
+
 # Build the sdist, the wheel, the .plasmoid and the GNOME zip
 dist:
     {{ python }} -m build

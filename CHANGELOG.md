@@ -23,6 +23,14 @@ All notable changes to this project are documented here. The format follows
   `session_lock_after_seconds` all say the session **locks** after that much **inactivity**.
   The `--idle-timeout` help line saying "auto-unlocks" is a slip in one string, and it had
   been read here as corroboration for the self-removal above. It is not.
+- **pass-cli 2.7.0 does not touch the session lock.** Checked on 2026-11-12, the day it was
+  installed here: all sixteen literals this engine classifies on are present, and the lock
+  vocabulary is identical in both wording and count - down to the wrong "auto-unlocks" help
+  line and the single `set_session_lock_after_seconds` setter. What 2.7.0 adds is an item
+  cache and a core-event cursor, and the locked-session refusal now appears in those new
+  paths too, where this engine already recognises it. Unchanged words are evidence that the
+  lock code was not touched, not proof: a fix that changed where `info` reads the lock from
+  would have left every string alone. `just check-strings` is what re-runs this check.
 
 ### Added
 
