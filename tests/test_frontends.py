@@ -8,6 +8,7 @@ convenience to the QML.
 
 import json
 import re
+import sys
 import unittest
 from pathlib import Path
 
@@ -128,7 +129,7 @@ class HowEachFaceHandsOverTheCode(unittest.TestCase):
 
     def test_the_plasma_widget_clears_the_field(self):
         qml = (PLASMOID / "contents" / "ui" / "main.qml").read_text()
-        for field in ("unlockField", "pinField", "pinAgain"):
+        for field in ("unlockField", "pinField", "pinAgain", "changeField"):
             self.assertIn(f'{field}.text = "";', qml, field)
 
     def test_the_gnome_extension_pipes_the_code(self):
@@ -165,6 +166,35 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class TheWaitingNotice(unittest.TestCase):
+    """The widget and the engine agree by file: where it is and how long it is believed."""
+
+    def test_the_widget_believes_a_prompt_as_long_as_the_engine_means(self):
+        sys.path.insert(0, str(ROOT / "src"))
+        from protonpass_tray import asking
+
+        qml = (PLASMOID / "contents" / "ui" / "main.qml").read_text()
+        self.assertIn(f"staleAfter: {asking.STALE_S:.0f} ", qml)
+        self.assertIn(f"{asking.directory().name}/*.json", qml)
+        self.assertGreater(asking.STALE_S, 2 * asking.BEAT_S)
+
+    def test_the_widget_says_it_is_listening(self):
+        """`unlock --wait` waits only while something would tell its user."""
+        qml = strip_comments((PLASMOID / "contents" / "ui" / "main.qml").read_text())
+        self.assertIn("touch ", qml)
+        self.assertIn('"listening"', qml)
+
+    def test_the_notification_does_not_take_the_code(self):
+        """Its reply field shows what is typed into it."""
+        notice = strip_comments((PLASMOID / "contents" / "ui" / "Notice.qml").read_text())
+        self.assertNotIn("reply", notice.lower())
+
+    def test_the_widget_does_not_need_the_notification_module(self):
+        qml = strip_comments((PLASMOID / "contents" / "ui" / "main.qml").read_text())
+        self.assertNotIn("import org.kde.notification", qml)
+        self.assertIn('source: "Notice.qml"', qml)
+
+
 class SharedIcons(unittest.TestCase):
     """The badges exist twice, because the widget is distributed on its own and cannot reach
     into a Python package for them. Twice is fine; silently different is not."""
@@ -175,6 +205,14 @@ class SharedIcons(unittest.TestCase):
             widget = PLASMOID / "contents" / "icons" / f"emblem-{name}.svg"
             self.assertTrue(widget.is_file(), widget)
             self.assertEqual(engine.read_bytes(), widget.read_bytes(), name)
+
+    def test_the_plasmoid_badge_is_not_looked_up_in_the_icon_theme(self):
+        """Kirigami.Icon takes a file's NAME to the icon theme first, and Breeze has its own
+        emblem-locked: the badge on the panel was an orange square that is not in this
+        repository. Rendering the widget is what showed it; nothing else could."""
+        qml = strip_comments((PLASMOID / "contents" / "ui" / "main.qml").read_text())
+        before = qml[: qml.index('"../icons/"')]
+        self.assertGreater(before.rindex("Image {"), before.rindex("Kirigami.Icon {"))
 
     def test_no_proton_artwork_is_shipped(self):
         """The Proton icon is referenced from the user's own installation, never vendored -

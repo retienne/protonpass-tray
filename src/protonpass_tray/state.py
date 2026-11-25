@@ -112,6 +112,18 @@ def save(state: State) -> State:
     return state
 
 
+def unlocked_since(when: float) -> bool:
+    """Has anything established, after `when`, that the session is unlocked?
+
+    For a prompt that is still waiting while another face takes the code. It reads the file
+    and nothing else, so a prompt may ask twice a second without touching the idle timer. The
+    timestamp is the point: a cache still saying "unlocked" from BEFORE the prompt is exactly
+    what an idle lock leaves behind, and believing it would end every prompt at once.
+    """
+    st = load()
+    return st.status is Lock.UNLOCKED and st.since > when
+
+
 def record(lock: Lock, *, source: str, idle_timeout: int | None = None) -> State:
     previous = load()
     return save(

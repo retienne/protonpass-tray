@@ -7,6 +7,11 @@ under systemd with no terminal still gets a dialog, and the same hook on a serve
 
 A code is never taken from an environment variable or from argv. Both are readable by other
 processes, and a lock code that leaks is a lock that was never there.
+
+A prompt can outlive its question. An unlock left waiting in a terminal while the code is
+typed into a panel has nothing left to ask, so `ask` takes a `done` - "has it happened
+already?" - and every source here gives up when it turns true. `pass-cli session unlock` has
+no such thing: it blocks on its own read of /dev/tty, and nothing outside can answer it.
 """
 
 from __future__ import annotations
@@ -15,14 +20,28 @@ import contextlib
 import getpass
 import json
 import os
+import select
 import shutil
 import socket
 import subprocess
 import sys
+import termios
+import time
+from collections.abc import Callable
+
+#: "Has what the code was wanted for happened already?" Must be free to ask: it is polled.
+Done = Callable[[], bool]
+
+#: How often a waiting prompt asks it.
+POLL_S = 0.5
 
 
 class NoPrompt(RuntimeError):
     """Nothing on this machine can ask the user for a code right now."""
+
+
+class Settled(RuntimeError):
+    """What the code was wanted for happened elsewhere while we were asking for it."""
 
 
 def socket_path() -> str:
@@ -30,8 +49,12 @@ def socket_path() -> str:
     return os.path.join(runtime, "protonpass-tray", "prompt.sock")
 
 
-def from_tray(reason: str, *, timeout: float = 120.0) -> str | None:
+def from_tray(reason: str, *, timeout: float = 120.0, done: Done | None = None) -> str | None:
     """Ask a running tray to show its dialog. None when no tray is listening."""
+    request = {"ask": reason}
+    if done is not None:
+        # The dialog is the tray's, so closing it is too. An older tray ignores this.
+        request["until"] = "unlocked"
     path = socket_path()
     if not os.path.exists(path):
         return None
@@ -39,7 +62,13 @@ def from_tray(reason: str, *, timeout: float = 120.0) -> str | None:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
             s.settimeout(timeout)
             s.connect(path)
-            s.sendall(json.dumps({"ask": reason}).encode() + b"\n")
+            s.sendall(json.dumps(request).encode() + b"\n")
+            deadline = time.monotonic() + timeout
+            while not select.select([s], [], [], POLL_S)[0]:
+                if done is not None and done():
+                    raise Settled
+                if time.monotonic() > deadline:
+                    return None
             data = s.makefile("rb").readline()
     except OSError:
         return None
@@ -51,10 +80,36 @@ def from_tray(reason: str, *, timeout: float = 120.0) -> str | None:
     return code if isinstance(code, str) and code else None
 
 
-def from_tty(reason: str) -> str | None:
+def _read_tty(reason: str, done: Done) -> str | None:
+    """getpass, except that it stops waiting when `done` says so."""
+    fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
+    try:
+        before = termios.tcgetattr(fd)
+        silent = list(before)
+        silent[3] &= ~termios.ECHO
+        # TCSAFLUSH both times, and the second is the one that matters: it discards a code
+        # half typed when the prompt ended, which the shell would otherwise read and echo.
+        termios.tcsetattr(fd, termios.TCSAFLUSH, silent)
+        try:
+            os.write(fd, f"{reason}: ".encode())
+            while not select.select([fd], [], [], POLL_S)[0]:
+                if done():
+                    raise Settled
+            return os.read(fd, 4096).decode(errors="replace").rstrip("\r\n") or None
+        finally:
+            termios.tcsetattr(fd, termios.TCSAFLUSH, before)
+            os.write(fd, b"\n")
+    finally:
+        os.close(fd)
+
+
+def from_tty(reason: str, *, done: Done | None = None) -> str | None:
     if not sys.stdin.isatty():
         return None
     try:
+        if done is not None:
+            with contextlib.suppress(OSError, termios.error):
+                return _read_tty(reason, done)
         return getpass.getpass(f"{reason}: ") or None
     except (EOFError, KeyboardInterrupt):
         return None
@@ -69,7 +124,29 @@ _DIALOGS = (
 )
 
 
-def from_dialog(reason: str, *, timeout: int = 120) -> str | None:
+def _run(argv: list[str], timeout: float, done: Done | None) -> subprocess.CompletedProcess:
+    """subprocess.run for a program that is asking a person, closed when `done` says so."""
+    with subprocess.Popen(  # noqa: S603
+        argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+    ) as proc:
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                out, err = proc.communicate(timeout=POLL_S)
+                return subprocess.CompletedProcess(argv, proc.returncode, out, err)
+            except subprocess.TimeoutExpired:
+                if done is not None and done():
+                    proc.terminate()
+                    raise Settled from None
+                if time.monotonic() > deadline:
+                    proc.kill()
+                    raise
+            except BaseException:
+                proc.kill()
+                raise
+
+
+def from_dialog(reason: str, *, timeout: int = 120, done: Done | None = None) -> str | None:
     """The desktop's own password dialog, for a caller with a screen but no terminal.
 
     This is what a Plasma widget relies on. QML can neither write a file nor open a socket, so
@@ -84,9 +161,7 @@ def from_dialog(reason: str, *, timeout: int = 120) -> str | None:
             continue
         argv = [program, *(part.format(reason=reason) for part in template)]
         try:
-            proc = subprocess.run(  # noqa: S603
-                argv, capture_output=True, text=True, timeout=timeout
-            )
+            proc = _run(argv, timeout, done)
         except (OSError, subprocess.TimeoutExpired):
             continue
         code = proc.stdout.strip()
@@ -98,11 +173,11 @@ def from_dialog(reason: str, *, timeout: int = 120) -> str | None:
     return None
 
 
-def from_systemd(reason: str, *, timeout: int = 120) -> str | None:
+def from_systemd(reason: str, *, timeout: int = 120, done: Done | None = None) -> str | None:
     """`systemd-ask-password` - present on every systemd distribution, and it finds whatever
     agent the session has: a terminal one, Plasma's, GNOME's, or the one on tty1."""
     try:
-        proc = subprocess.run(  # noqa: S603
+        proc = _run(
             [
                 "systemd-ask-password",
                 f"--timeout={timeout}",
@@ -110,9 +185,8 @@ def from_systemd(reason: str, *, timeout: int = 120) -> str | None:
                 "--id=protonpass-tray",
                 f"{reason}:",
             ],
-            capture_output=True,
-            text=True,
-            timeout=timeout + 5,
+            timeout + 5,
+            done,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -160,11 +234,16 @@ def from_stdin() -> str:
     return code
 
 
-def ask(reason: str = "Proton Pass lock code") -> str:
+def ask(reason: str = "Proton Pass lock code", *, done: Done | None = None) -> str:
+    """The code, from the first source that can ask. Settled when `done` turns true first."""
     for source in (from_tray, from_tty, from_dialog, from_systemd):
-        code = source(reason)
+        code = source(reason, done=done)
         if code:
             return code
+        # A tray that closed its own dialog answers with no code. Without this the next source
+        # would ask again for what has just been done.
+        if done is not None and done():
+            raise Settled
     raise NoPrompt(
         "no way to ask for the lock code here: no tray is running, stdin is not a terminal, "
         "no password dialog is installed, and systemd-ask-password gave nothing"

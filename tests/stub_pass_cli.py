@@ -23,6 +23,16 @@ test can assert that something made no call at all.
                        locked", `lock` answers "Session has no lock" - and `vault list` and
                        `create-lock` still refuse because the SERVER has it locked. The exact
                        deadlock measured on a live session on 2026-11-11, 22:08 to 23:29.
+  STUB_ASKS_SERVER=1   pass-cli 2.7.1 and later: every lock command asks the server about the
+                       lock first, so none of them can be stale, and four answers change -
+                       `lock` on a locked session says "Session is already locked" and exits
+                       0; `unlock` on an unlocked one says "Session is not locked" and exits 0;
+                       `unlock` and `remove-lock` with no lock say "Session has no lock" and
+                       read no code; `create-lock` with any lock, locked or not, says "Session
+                       already has a lock". `info` on a locked session says "yes" with no
+                       timeout. Read off the 2.7.1 source, not a binary.
+  STUB_CHECK_FAILS=1   with STUB_ASKS_SERVER: the server check itself fails, before any code
+                       is read, the way anyhow prints it from main.
 """
 
 import json
@@ -141,6 +151,49 @@ if os.environ.get("STUB_NO_SESSION") == "1":
     raise SystemExit(1)
 
 state = load()
+
+if os.environ.get("STUB_ASKS_SERVER") == "1":
+    if args[:1] == ["session"] and os.environ.get("STUB_CHECK_FAILS") == "1":
+        # anyhow's Debug form, which is what `fn main() -> Result<()>` prints. The cause is
+        # deliberately in words nothing matches: the context line has to carry it alone.
+        print(
+            "Error: Error checking session lock\n\nCaused by:\n    Internal server error",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+    if args[:1] == ["info"]:
+        print("- Release track: stable")
+        print("- Email: someone@proton.me")
+        if not state["has_lock"]:
+            print("- Session has lock: no")
+        elif state["locked"]:
+            print("- Session has lock: yes")
+        else:
+            print(
+                f"- Session has lock: yes (locks after {state['idle_timeout']} seconds "
+                "of inactivity)"
+            )
+        raise SystemExit(0)
+
+    if args[:2] == ["session", "create-lock"] and state["has_lock"]:
+        print("Error: Session already has a lock", file=sys.stderr)
+        raise SystemExit(1)
+
+    if args[:2] == ["session", "lock"] and state["locked"]:
+        print("Session is already locked")
+        raise SystemExit(0)
+
+    if args[:2] in (["session", "unlock"], ["session", "remove-lock"]) and not state["has_lock"]:
+        print("Error: Session has no lock", file=sys.stderr)
+        raise SystemExit(1)
+
+    if args[:2] == ["session", "unlock"] and not state["locked"]:
+        print("Session is not locked")
+        raise SystemExit(0)
+
+    # Everything else - vault list, lock on an unlocked session, a create-lock with no lock,
+    # an unlock or remove-lock with a lock - behaves as it always did, below.
 
 if args[:1] == ["info"]:
     print("- Release track: stable")

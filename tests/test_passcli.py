@@ -340,5 +340,41 @@ class WhatPassCliSaysWhenItFails(Harness):
         self.assertEqual(len(self.stub_calls()), 1, self.stub_calls())
 
 
+class WhatPassCli271Adds(Harness):
+    """The two sentences 2.7.1 can print that 2.7.0 could not, read off its source."""
+
+    def test_already_locked_is_locked(self):
+        self.assertIs(
+            self.passcli._classify(0, "Session is already locked", ["session", "lock"]),
+            Verdict.LOCKED,
+        )
+
+    def test_a_failed_server_check_is_a_failure_on_every_command(self):
+        """Before the code is read, so never WRONG_CODE - which `unlock`'s non-zero exit
+        would otherwise have made it - and whatever words the cause arrives in."""
+        output = (
+            "Error: Error checking session lock\n\nCaused by:\n"
+            "    0: Error sending check session lock request\n    1: Session is not locked"
+        )
+        for command in ("lock", "unlock", "remove-lock", "create-lock"):
+            with self.subTest(command=command):
+                self.assertIs(
+                    self.passcli._classify(1, output, ["session", command]), Verdict.FAILED
+                )
+
+    def test_info_says_yes_without_a_timeout(self):
+        self.set_stub(has_lock=True, locked=True, idle_timeout=300)
+        with unittest.mock.patch.dict("os.environ", {"STUB_ASKS_SERVER": "1"}):
+            details = self.passcli.info()
+        self.assertIs(details.has_lock, True)
+        self.assertEqual(details.idle_timeout, 0)
+
+    def test_info_reads_the_timeout_in_its_long_form(self):
+        self.set_stub(has_lock=True, locked=False, idle_timeout=600)
+        with unittest.mock.patch.dict("os.environ", {"STUB_ASKS_SERVER": "1"}):
+            details = self.passcli.info()
+        self.assertEqual(details.idle_timeout, 600)
+
+
 if __name__ == "__main__":
     unittest.main()

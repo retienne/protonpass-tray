@@ -21,9 +21,11 @@ dialog, which is why the socket server is here rather than an afterthought.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
+import time
 from importlib import resources
 
 from PyQt6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, pyqtSignal, pyqtSlot
@@ -44,15 +46,19 @@ from .state import Lock
 #: How often the cache is re-read and the countdown redrawn. Local work only.
 TICK_MS = 2000
 
-#: Where the Proton Pass application's own icon is, when it is installed. Looked up in the
-#: icon theme first; the second path is where Proton's .deb puts it, which the freedesktop
-#: spec calls a legacy location and Qt does not search - so with Breeze, the default Plasma
-#: theme, the theme lookup fails and this is what finds it.
+#: Where the Proton Pass application's own icon is, when it is installed. First the mark alone,
+#: on transparency, the way the browser extension shows it: the application's launcher icon is
+#: the same mark small on a white plate, which on a panel is mostly plate. Where that file is
+#: not, the icon theme, and then the launcher icon where Proton's .deb puts it - which the
+#: freedesktop spec calls a legacy location and Qt does not search.
 #:
 #: NOTE ON USING IT AT ALL: this REFERENCES an icon the user's own Proton package installed.
 #: No Proton artwork is shipped in this repository, and nothing that represents this project
 #: - the application icon, the widget in Plasma's chooser, a store listing - uses their mark.
 #: A third-party tool may say which service a status is about; it may not dress up as it.
+PROTON_MARK_PATH = (
+    "/usr/lib/proton-pass/resources/assets/Square44x44Logo.targetsize-256_altform-unplated.png"
+)
 PROTON_ICON_NAME = "proton-pass"
 PROTON_ICON_PATHS = (
     "/usr/share/pixmaps/proton-pass.png",
@@ -69,20 +75,24 @@ _ICONS = {
     Lock.UNKNOWN: ("dialog-question", "unknown"),
 }
 
-#: States drawn at full strength. Everything else is dimmed, because at 22 pixels a change in
-#: brightness is read across a panel before any emblem is - the emblem only confirms it.
-_BRIGHT = (Lock.UNLOCKED, Lock.NO_LOCK)
+#: States drawn at full strength, as the browser extension draws both of its own: a locked
+#: session is an ordinary state, and the padlock says it. Dimmed is kept for "cannot say".
+_BRIGHT = (Lock.UNLOCKED, Lock.LOCKED, Lock.NO_LOCK)
 
 #: The badge drawn over the Proton icon. Deliberately NOT the theme's emblems: those are full
-#: icons with detail that turns to mush at the twelve pixels this gets, so these are three
-#: shapes drawn for that size - white on a dark disc with a white ring, which reads on a light
-#: panel and a dark one. NO_LOCK has none: there is no lock to be in a state about.
+#: icons with detail that turns to mush at the fifteen pixels this gets. UNLOCKED has none, as
+#: in the browser extension: an open padlock and a closed one differ too little at that size
+#: to be told apart across a panel, and a padlock against none does not. The open one is for
+#: NO_LOCK instead, which would otherwise look like a session that is merely unlocked.
 _EMBLEMS = {
-    Lock.UNLOCKED: "unlocked",
+    Lock.NO_LOCK: "unlocked",
     Lock.LOCKED: "locked",
     Lock.NO_SESSION: "alert",
     Lock.UNKNOWN: "alert",
 }
+
+#: How much of the icon's width the badge takes: the browser extension's own proportion.
+BADGE = 0.69
 
 _COMPOSED: dict[Lock, QIcon] = {}
 
@@ -102,6 +112,8 @@ def _glyph(status: Lock) -> QIcon:
 
 
 def proton_icon() -> QIcon | None:
+    if os.path.exists(PROTON_MARK_PATH):
+        return QIcon(PROTON_MARK_PATH)
     icon = QIcon.fromTheme(PROTON_ICON_NAME)
     if not icon.isNull():
         return icon
@@ -132,7 +144,7 @@ def _compose(base: QIcon, status: Lock) -> QIcon:
         painter.drawPixmap(0, 0, base.pixmap(size, size))
         if status in _EMBLEMS:
             painter.setOpacity(1.0)
-            badge = round(size * 0.56)
+            badge = round(size * BADGE)
             with resources.as_file(
                 resources.files(__package__) / "icons" / f"emblem-{_EMBLEMS[status]}.svg"
             ) as path:
@@ -175,6 +187,9 @@ class Tray:
         self.pool = QThreadPool.globalInstance()
         self.state = state.load()
         self.busy = False
+        # Dialogs asking for the code to UNLOCK, and when each began: tick() closes them when
+        # the session is unlocked from somewhere else, a terminal or a panel widget.
+        self._waiting: dict[QInputDialog, float] = {}
         # Jobs in flight are held here. The thread pool owns the QRunnable but nothing owns
         # its signal object, so without this Python collects it mid-call and the worker dies
         # emitting its own result ("wrapped C/C++ object ... has been deleted").
@@ -188,6 +203,7 @@ class Tray:
         self.act_lock = QAction("Lock now", self.menu)
         self.act_check = QAction("Check now", self.menu)
         self.act_setup = QAction("Create a lock…", self.menu)
+        self.act_timeout = QAction("Change the lock time…", self.menu)
         self.act_remove = QAction("Remove the lock…", self.menu)
         self.act_quit = QAction("Quit", self.menu)
 
@@ -195,6 +211,7 @@ class Tray:
         self.act_lock.triggered.connect(self.lock)
         self.act_check.triggered.connect(self.refresh)
         self.act_setup.triggered.connect(self.setup)
+        self.act_timeout.triggered.connect(self.change_timeout)
         self.act_remove.triggered.connect(self.remove)
         self.act_quit.triggered.connect(self.app.quit)
 
@@ -206,6 +223,7 @@ class Tray:
             self.act_check,
             None,
             self.act_setup,
+            self.act_timeout,
             self.act_remove,
             None,
             self.act_quit,
@@ -245,12 +263,14 @@ class Tray:
         self.act_unlock.setVisible(status in (Lock.LOCKED, Lock.UNKNOWN))
         self.act_lock.setVisible(status is Lock.UNLOCKED)
         self.act_setup.setVisible(status in (Lock.NO_LOCK, Lock.UNKNOWN))
+        self.act_timeout.setVisible(status is Lock.UNLOCKED)
         self.act_remove.setVisible(status in (Lock.UNLOCKED, Lock.LOCKED))
         for action in (
             self.act_unlock,
             self.act_lock,
             self.act_check,
             self.act_setup,
+            self.act_timeout,
             self.act_remove,
         ):
             action.setEnabled(not self.busy)
@@ -266,6 +286,9 @@ class Tray:
                 source="idle timeout elapsed (inferred)",
                 idle_timeout=self.state.idle_timeout,
             )
+        for dialog, began in list(self._waiting.items()):
+            if state.unlocked_since(began):
+                dialog.reject()
         self.draw()
 
     # --- the actions ---------------------------------------------------------------------
@@ -298,7 +321,7 @@ class Tray:
         self._run(actions.lock)
 
     def unlock(self) -> None:
-        code = self._ask("Proton Pass is locked. Enter your lock code:")
+        code = self._ask("Proton Pass is locked. Enter your lock code:", until_unlocked=True)
         if code:
             self._run(lambda: actions.unlock(code))
 
@@ -309,11 +332,17 @@ class Tray:
         if self._ask("Enter it again:") != code:
             self._complain("The two codes were different; nothing was changed.")
             return
-        timeout, ok = QInputDialog.getInt(
-            None, "Proton Pass", "Lock the session after how many seconds unused?", 600, 30, 900, 30
-        )
-        if ok:
+        timeout = self._ask_timeout(600)
+        if timeout:
             self._run(lambda: actions.create_lock(code, timeout))
+
+    def change_timeout(self) -> None:
+        timeout = self._ask_timeout(self.state.idle_timeout or 600)
+        if not timeout or timeout == self.state.idle_timeout:
+            return
+        code = self._ask("Enter the lock code to change the time:")
+        if code:
+            self._run(lambda: actions.set_timeout(code, timeout))
 
     def remove(self) -> None:
         code = self._ask("Enter the lock code to remove the lock:")
@@ -321,9 +350,30 @@ class Tray:
             self._run(lambda: actions.remove_lock(code))
 
     # --- asking ---------------------------------------------------------------------------
-    def _ask(self, reason: str) -> str | None:
-        code, ok = QInputDialog.getText(None, "Proton Pass", reason, QLineEdit.EchoMode.Password)
-        return code if ok and code else None
+    def _ask_timeout(self, current: int) -> int | None:
+        seconds, ok = QInputDialog.getInt(
+            None,
+            "Proton Pass",
+            "Lock the session after how many seconds unused?",
+            current,
+            30,
+            900,
+            30,
+        )
+        return seconds if ok else None
+
+    def _ask(self, reason: str, *, until_unlocked: bool = False) -> str | None:
+        dialog = QInputDialog()
+        dialog.setWindowTitle("Proton Pass")
+        dialog.setLabelText(reason)
+        dialog.setTextEchoMode(QLineEdit.EchoMode.Password)
+        if until_unlocked:
+            self._waiting[dialog] = time.time()
+        try:
+            accepted = dialog.exec() == QInputDialog.DialogCode.Accepted
+        finally:
+            self._waiting.pop(dialog, None)
+        return (dialog.textValue() or None) if accepted else None
 
     def _complain(self, text: str) -> None:
         QMessageBox.warning(None, "Proton Pass", text)
@@ -361,10 +411,13 @@ class Tray:
             except ValueError:
                 request = {}
             reason = str(request.get("ask") or "Proton Pass lock code")
-            code = self._ask(f"{reason}:")
-            conn.write(json.dumps({"code": code or ""}).encode() + b"\n")
-            conn.flush()
-            conn.close()
+            code = self._ask(f"{reason}:", until_unlocked=request.get("until") == "unlocked")
+            # The caller may have gone while the dialog was up, taking the connection with it:
+            # disconnected -> deleteLater runs inside the dialog's own event loop.
+            with contextlib.suppress(RuntimeError):
+                conn.write(json.dumps({"code": code or ""}).encode() + b"\n")
+                conn.flush()
+                conn.close()
 
         conn.readyRead.connect(ready)
 

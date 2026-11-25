@@ -190,6 +190,11 @@ def _wedged() -> Outcome | None:
     This program is the only thing that sees both halves, because it probes with `vault list`
     AND runs the lock commands. So it is the only thing that can name the situation instead of
     relaying a sentence that contradicts what the operator can see on screen.
+
+    pass-cli 2.7.1 fixed it at the source: every lock command asks the server first, and the
+    session file no longer lets a stale copy write the lock away. Kept, because 2.5.1 to 2.7.0
+    are still installed, and on 2.7.1 it costs nothing - the sentences that lead here then
+    carry the server's word, so the probe agrees with them and this returns None.
     """
     st = _reconciled()
     if st is None or st.status is not Lock.LOCKED:
@@ -234,7 +239,8 @@ def unlock(code: str) -> Outcome:
         # "Session is locked" - the server had auto-locked on idleness and the client had not
         # found out. Recording "unlocked" on its word is the same mistake as believing `info`,
         # and it would have had every face show a green icon over a session that could not
-        # read a single secret. So probe, and report what the probe says.
+        # read a single secret. So probe, and report what the probe says. (2.7.1 says it on
+        # the server's word and exits 0; the probe then agrees, and this is one extra read.)
         if wedged := _wedged():
             return wedged
         st = _reconciled()
@@ -295,10 +301,23 @@ def create_lock(code: str, idle_timeout: int) -> Outcome:
             state=outcome.state,
         )
     if result.verdict is Verdict.HAS_LOCK:
+        # pass-cli 2.7.1 answers this on a LOCKED session too, where 2.5.1 said "Session is
+        # locked": it asks the server, which reports the lock, and stops there. "Remove it
+        # first" is then the wrong advice twice over - removing needs the code anyway, and a
+        # face reading EXIT_USAGE keeps the create form up. So find out which it is.
+        st = _reconciled()
+        if st is not None and st.status is Lock.LOCKED:
+            return Outcome(
+                EXIT_LOCKED,
+                "This session already has a lock, and it is locked. Unlock it first.",
+                is_error=True,
+                state=st,
+            )
         return Outcome(
             EXIT_USAGE,
             "This session already has a lock. Remove it first to change the timeout.",
             is_error=True,
+            state=st,
         )
     if result.verdict is Verdict.UNSUPPORTED:
         return Outcome(
@@ -333,4 +352,80 @@ def remove_lock(code: str) -> Outcome:
         result.message,
         "pass-cli could not remove the lock",
         unchanged=(Lock.LOCKED, Lock.UNLOCKED),
+    )
+
+
+def set_timeout(code: str, idle_timeout: int) -> Outcome:
+    """Change how long idle is too long, keeping the same code.
+
+    pass-cli has no command for it: a lock's timeout is fixed when the lock is created, and
+    create-lock refuses while there is one. So this removes the lock and creates it again with
+    the code just given - which the server has checked by then, since it took the removal. The
+    one bad ending is a removal that worked and a creation that did not, and that is said in
+    words and never as a state: the session would otherwise stand open under a message that
+    reads like an ordinary refusal.
+
+    Only on an unlocked session. Whether the server lets a locked one drop its lock was never
+    measured, and a change of timeout must not be how anyone finds out.
+    """
+    if not 30 <= idle_timeout <= 900:
+        return Outcome(
+            EXIT_USAGE, "--idle-timeout must be between 30 and 900 seconds", is_error=True
+        )
+    before = refresh()
+    status = before.state.status if before.state else Lock.UNKNOWN
+    if status is Lock.NO_LOCK:
+        return Outcome(
+            EXIT_NO_LOCK,
+            "This session has no lock yet. Run: protonpass-tray setup",
+            is_error=True,
+            state=before.state,
+        )
+    if status is Lock.LOCKED:
+        return Outcome(
+            EXIT_LOCKED,
+            "The session is locked. Unlock it first.",
+            is_error=True,
+            state=before.state,
+        )
+    if status is not Lock.UNLOCKED:
+        return Outcome(before.exit_code, before.message, is_error=True, state=before.state)
+
+    removed = passcli.feed_code(["session", "remove-lock"], code)
+    if removed.verdict is not Verdict.OK:
+        st = _reconciled()
+        # A removal whose answer was lost still happened, and stopping there would leave the
+        # session with no lock at all.
+        if st is None or st.status is not Lock.NO_LOCK:
+            # Not EXIT_LOCKED: a face reads that as "here is the state" and shows nothing.
+            said = (
+                "That code was not accepted."
+                if removed.verdict is Verdict.WRONG_CODE
+                else removed.message or "pass-cli could not change the lock."
+            )
+            rest = "The lock is unchanged." if st else "Check the lock before relying on it."
+            return Outcome(EXIT_USAGE, f"{said} {rest}", is_error=True, state=st)
+
+    has_lock = (Lock.UNLOCKED, Lock.LOCKED)
+    for _attempt in range(2):
+        created = create_lock(code, idle_timeout)
+        # A creation that says it failed may have happened all the same, its answer lost. The
+        # session says which, and any lock on it now is the new one.
+        after = created.state if created.ok else _reconciled()
+        if after is not None and after.status in has_lock:
+            break
+    else:
+        st = state.record(Lock.NO_LOCK, source="protonpass-tray set-timeout", idle_timeout=0)
+        return Outcome(
+            EXIT_UNRECOGNISED,
+            "The lock was removed and could not be created again, so this session has NO LOCK "
+            f"now. Create it again. ({created.message})",
+            is_error=True,
+            state=st,
+        )
+    if after.status is Lock.LOCKED:
+        # It was unlocked when this began, and the code is at hand.
+        after = unlock(code).state
+    return Outcome(
+        EXIT_OK, f"The session now locks itself after {idle_timeout}s unused.", state=after
     )

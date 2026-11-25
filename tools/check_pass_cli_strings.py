@@ -22,7 +22,9 @@ Two deliberate details:
     not a verdict - refresh() asks `vault list` about the lock and deliberately does not
     believe `info` about whether one exists - so failing on them would be a false alarm.
 
-Checked: every literal present in 2.5.1, and in 2.7.0 on 2026-11-12, unchanged.
+Checked: every literal present in 2.5.1, and in 2.7.0 on 2026-11-12, unchanged. 2.7.1 read
+off its source on 2026-11-23 and run on its binary on 2026-11-24: all present, plus its two
+new ones.
 """
 
 from __future__ import annotations

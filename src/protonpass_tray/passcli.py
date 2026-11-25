@@ -11,7 +11,9 @@ invisible rather than noisy:
     strings below are read off pass-cli 2.5.1 and are not a stable interface; a release that
     reworded them must turn this module uncertain, not confidently wrong. `just check-strings`
     is what tells you which it did - it reads the table out of this module and looks for every
-    literal in the binary. 2.7.0 passes it unchanged.
+    literal in the binary. 2.7.0 passes it unchanged. 2.7.1 keeps every one of them and adds
+    two, both below, because it asks the server about the lock before every lock command and
+    so has two new things to say: that a lock is already engaged, and that the question failed.
 """
 
 from __future__ import annotations
@@ -43,7 +45,7 @@ def binary() -> str:
 
 DEFAULT_TIMEOUT = 30
 
-# pass-cli 2.5.1, every literal still present in 2.7.0. Compared case-insensitively
+# pass-cli 2.5.1, every literal still present in 2.7.0 and 2.7.1. Compared case-insensitively
 # against stdout+stderr.
 _LOCKED = "session is locked. please unlock your session"
 _NO_LOCK = "session has no lock"
@@ -69,6 +71,13 @@ _REQUEST_FAILED_RE = re.compile(r"error (?:creating|sending) [a-z ]*session[a-z 
 # has no "wrong code" string of its own - it reports the failed operation instead.
 _UNLOCK_FAILED = "error unlocking session"
 _REMOVE_FAILED = "error removing session lock"
+# pass-cli 2.7.1, read off its source (pass-cli/src/commands/session/), not off 2.5.1's strings.
+# `session lock` on a session the server already has locked: exit 0, nothing changed.
+_ALREADY_LOCKED = "session is already locked"
+# Every lock command now opens with GET /pass/v1/user/session/lock/check, and this is how it
+# fails. It comes BEFORE the code is asked for, so it is never a wrong code - and on `unlock`,
+# where a non-zero exit in unknown words is read as one, that is the mistake it would cause.
+_CHECK_FAILED = "error checking session lock"
 
 
 class Verdict(enum.Enum):
@@ -116,7 +125,11 @@ def available() -> bool:
 
 def _classify(rc: int, output: str, args: Sequence[str] = ()) -> Verdict:
     low = output.lower()
-    if _LOCKED in low:
+    # First, ahead of every sentence about the lock: what follows it is the reason the check
+    # failed, in the API's words, and none of them may be mistaken for an answer.
+    if _CHECK_FAILED in low:
+        return Verdict.FAILED
+    if _LOCKED in low or _ALREADY_LOCKED in low:
         return Verdict.LOCKED
     if _NOT_LOCKED in low:
         return Verdict.NOT_LOCKED
@@ -357,6 +370,9 @@ _DURATION_RE = re.compile(r"(\d+)\s*(seconds?|secs?|minutes?|mins?|s|m)?\b", re.
 #: pass-cli 2.5.1 prints the timeout in two shapes, both read off the binary's own strings:
 #:   "- Session has lock: yes (locks after 300s)"
 #:   "Session will lock after 300 seconds of inactivity"
+#: and 2.7.1 a third, with no timeout at all, when the server says there is a lock but the
+#: client never learned its length (a locked session does not tell it):
+#:   "- Session has lock: yes"
 _LOCKS_AFTER_RE = re.compile(r"locks? after\s+([0-9]+\s*[a-z]*)", re.I)
 #: A fallback for the timeout, in case a release prints it on its own line rather than after
 #: the yes. Missing it costs only the countdown, never the state, so this is insurance and not

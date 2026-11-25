@@ -6,6 +6,7 @@ would keep the session unlocked for ever while displaying "unlocked" quite corre
 """
 
 import io
+import json
 import unittest
 import unittest.mock
 
@@ -465,6 +466,195 @@ class TheDeadlockHasAName(Harness):
         self.set_stub(has_lock=True, locked=False, idle_timeout=300, code="1234")
         self.assertEqual(self.run_cli("unlock"), cli.EXIT_OK)
         self.assertNotIn("logout", self.err)
+
+
+class ChangingTheTimeout(Harness):
+    """pass-cli cannot change a lock's timeout: it is removed and created again, so what is
+    tested is that no road leaves the session open without saying so."""
+
+    def setUp(self):
+        super().setUp()
+        patcher = unittest.mock.patch.object(self.prompt, "ask", return_value="1234")
+        self.ask = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def lock_file(self):
+        return json.loads(self.state_file.read_text())
+
+    def test_the_lock_comes_back_with_the_new_time_and_the_same_code(self):
+        for server in ("", "1"):
+            with (
+                self.subTest(server=server),
+                unittest.mock.patch.dict("os.environ", {"STUB_ASKS_SERVER": server}),
+            ):
+                self.set_stub(has_lock=True, idle_timeout=600, code="1234")
+                self.assertEqual(self.run_cli("set-timeout", "300"), cli.EXIT_OK, self.err)
+                self.assertTrue(self.lock_file()["has_lock"])
+                self.assertEqual(self.lock_file()["idle_timeout"], 300)
+                self.assertEqual(self.lock_file()["code"], "1234")
+                self.assertIs(self.state.load().status, Lock.UNLOCKED)
+                self.assertEqual(self.state.load().idle_timeout, 300)
+
+    def test_a_wrong_code_changes_nothing_and_says_so(self):
+        self.set_stub(has_lock=True, idle_timeout=600, code="1234")
+        self.ask.return_value = "9999"
+        # Not 10, which a face takes for "here is the state" and shows nothing.
+        self.assertEqual(self.run_cli("set-timeout", "300"), cli.EXIT_USAGE)
+        self.assertIn("not accepted", self.err)
+        self.assertIn("unchanged", self.err)
+        self.assertEqual(self.lock_file()["idle_timeout"], 600)
+
+    def test_a_locked_session_is_left_alone(self):
+        self.set_stub(has_lock=True, locked=True, idle_timeout=600, code="1234")
+        self.assertEqual(self.run_cli("set-timeout", "300"), cli.EXIT_LOCKED)
+        self.assertFalse([c for c in self.stub_calls() if c.startswith("session")])
+
+    def test_no_lock_points_at_setup(self):
+        self.set_stub(has_lock=False)
+        self.assertEqual(self.run_cli("set-timeout", "300"), cli.EXIT_NO_LOCK)
+        self.assertIn("setup", self.err)
+
+    def test_a_number_pass_cli_would_refuse_never_costs_the_lock(self):
+        self.set_stub(has_lock=True, idle_timeout=600, code="1234")
+        for seconds in ("10", "901"):
+            self.assertEqual(self.run_cli("set-timeout", seconds), cli.EXIT_USAGE)
+        self.assertEqual(self.stub_calls(), [])
+
+    def failing(self, times):
+        real, left = self.passcli.feed_code, [times]
+
+        def feed(args, code, **kwargs):
+            if args[1] == "create-lock" and left[0]:
+                left[0] -= 1
+                return self.passcli.Result(self.passcli.Verdict.FAILED, 1, "Error locking session")
+            return real(args, code, **kwargs)
+
+        return unittest.mock.patch.object(self.passcli, "feed_code", feed)
+
+    def test_a_creation_that_fails_once_is_tried_again(self):
+        self.set_stub(has_lock=True, idle_timeout=600, code="1234")
+        with self.failing(1):
+            self.assertEqual(self.run_cli("set-timeout", "300"), cli.EXIT_OK)
+        self.assertEqual(self.lock_file()["idle_timeout"], 300)
+
+    def test_a_lock_that_could_not_be_put_back_is_said_out_loud(self):
+        self.set_stub(has_lock=True, idle_timeout=600, code="1234")
+        with self.failing(2):
+            self.assertEqual(self.run_cli("set-timeout", "300"), cli.EXIT_UNRECOGNISED)
+        self.assertIn("NO LOCK", self.err)
+        self.assertIs(self.state.load().status, Lock.NO_LOCK)
+
+    def test_a_creation_whose_answer_was_lost_is_not_reported_as_no_lock(self):
+        self.set_stub(has_lock=True, idle_timeout=600, code="1234")
+        real = self.passcli.feed_code
+
+        def feed(args, code, **kwargs):
+            result = real(args, code, **kwargs)
+            if args[1] == "create-lock":
+                return self.passcli.Result(self.passcli.Verdict.TIMEOUT, 124, "no answer")
+            return result
+
+        with unittest.mock.patch.object(self.passcli, "feed_code", feed):
+            self.assertEqual(self.run_cli("set-timeout", "300"), cli.EXIT_OK)
+        self.assertEqual(self.lock_file()["idle_timeout"], 300)
+        self.assertIs(self.state.load().status, Lock.UNLOCKED)
+
+    def test_a_removal_whose_answer_was_lost_still_gets_its_lock_back(self):
+        self.set_stub(has_lock=True, idle_timeout=600, code="1234")
+        real = self.passcli.feed_code
+
+        def feed(args, code, **kwargs):
+            result = real(args, code, **kwargs)
+            if args[1] == "remove-lock":
+                return self.passcli.Result(self.passcli.Verdict.TIMEOUT, 124, "no answer")
+            return result
+
+        with unittest.mock.patch.object(self.passcli, "feed_code", feed):
+            self.assertEqual(self.run_cli("set-timeout", "300"), cli.EXIT_OK)
+        self.assertEqual(self.lock_file()["idle_timeout"], 300)
+
+
+class PassCliAsksTheServer(Harness):
+    """pass-cli 2.7.1, which asks the server about the lock before every lock command.
+
+    The fix for the deadlock above, and it changes four answers - see STUB_ASKS_SERVER in the
+    stub. Each test here is one of them: the engine must read the new answer as what it now
+    means, and must never reach for EXIT_WEDGED, whose whole premise 2.7.1 removed.
+    """
+
+    def setUp(self):
+        super().setUp()
+        patcher = unittest.mock.patch.object(self.prompt, "ask", return_value="1234")
+        self.ask = patcher.start()
+        self.addCleanup(patcher.stop)
+        env = unittest.mock.patch.dict("os.environ", {"STUB_ASKS_SERVER": "1"})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def test_the_round_trip_still_works(self):
+        self.set_stub(has_lock=False)
+        self.assertEqual(self.run_cli("setup", "--idle-timeout", "600"), cli.EXIT_OK)
+        self.assertEqual(self.run_cli("lock"), cli.EXIT_OK)
+        self.assertIs(self.state.load().status, Lock.LOCKED)
+        self.assertEqual(self.run_cli("unlock"), cli.EXIT_OK)
+        self.assertIs(self.state.load().status, Lock.UNLOCKED)
+
+    def test_locking_a_locked_session_is_success(self):
+        """2.7.1 answers "Session is already locked" and exits 0. Unknown words until now,
+        which sent it down the unreadable path and out as exit 3."""
+        self.set_stub(has_lock=True, locked=True, idle_timeout=300, code="1234")
+        self.assertEqual(self.run_cli("lock"), cli.EXIT_OK)
+        self.assertIs(self.state.load().status, Lock.LOCKED)
+
+    def test_unlock_asks_for_the_code_and_a_wrong_one_is_refused(self):
+        self.set_stub(has_lock=True, locked=True, idle_timeout=300, code="1234")
+        self.ask.return_value = "9999"
+        self.assertEqual(self.run_cli("unlock"), cli.EXIT_LOCKED)
+        self.assertIn("not accepted", self.err)
+
+    def test_unlocking_an_unlocked_session_is_success(self):
+        self.set_stub(has_lock=True, locked=False, idle_timeout=300, code="1234")
+        self.assertEqual(self.run_cli("unlock"), cli.EXIT_OK)
+        self.assertIs(self.state.load().status, Lock.UNLOCKED)
+        self.assertNotIn("logout", self.err)
+
+    def test_unlock_with_no_lock_is_no_lock_not_a_deadlock(self):
+        self.set_stub(has_lock=False)
+        self.assertEqual(self.run_cli("unlock"), cli.EXIT_NO_LOCK)
+        self.assertNotIn("logout", self.err)
+
+    def test_remove_lock_with_no_lock_is_no_lock(self):
+        self.set_stub(has_lock=False)
+        self.assertEqual(self.run_cli("remove-lock"), cli.EXIT_NO_LOCK)
+        self.assertIs(self.state.load().status, Lock.NO_LOCK)
+
+    def test_setup_on_a_locked_session_says_unlock_it(self):
+        """2.5.1 answered "Session is locked" here; 2.7.1 answers "already has a lock". The
+        face must still get EXIT_LOCKED, so it offers the code field rather than the form."""
+        self.set_stub(has_lock=True, locked=True, idle_timeout=300, code="1234")
+        self.assertEqual(self.run_cli("setup", "--idle-timeout", "300"), cli.EXIT_LOCKED)
+        self.assertIn("unlock it first", self.err.lower())
+        self.assertIs(self.state.load().status, Lock.LOCKED)
+
+    def test_setup_on_an_unlocked_lock_is_still_a_usage_error(self):
+        self.set_stub(has_lock=True, locked=False, idle_timeout=300, code="1234")
+        self.assertEqual(self.run_cli("setup", "--idle-timeout", "300"), cli.EXIT_USAGE)
+        self.assertIn("remove it first", self.err.lower())
+
+    def test_a_failed_check_is_not_a_wrong_code(self):
+        """The check fails before the code is read, so "not accepted" would be a lie - and
+        the one this module tells by default for an unlock that exits non-zero."""
+        self.set_stub(has_lock=True, locked=True, idle_timeout=300, code="1234")
+        with unittest.mock.patch.dict("os.environ", {"STUB_CHECK_FAILS": "1"}):
+            code = self.run_cli("unlock")
+        self.assertNotEqual(code, cli.EXIT_OK)
+        self.assertNotIn("not accepted", self.err)
+        self.assertIn("error checking session lock", self.err.lower())
+
+    def test_a_locked_session_with_no_timeout_in_info_is_still_locked(self):
+        self.set_stub(has_lock=True, locked=True, idle_timeout=300)
+        self.assertEqual(self.run_cli("status", "--refresh"), cli.EXIT_LOCKED)
+        self.assertNotIn("info said no lock", self.state.load().source)
 
 
 if __name__ == "__main__":

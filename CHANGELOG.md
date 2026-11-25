@@ -31,6 +31,18 @@ All notable changes to this project are documented here. The format follows
   paths too, where this engine already recognises it. Unchanged words are evidence that the
   lock code was not touched, not proof: a fix that changed where `info` reads the lock from
   would have left every string alone. `just check-strings` is what re-runs this check.
+- **pass-cli 2.7.1 fixes the deadlock at its source.** Read off Proton's published source on
+  2026-11-23, and seen on a live session on 2026-11-24: with `vault list` refused as locked,
+  `session unlock` asked for the code and unlocked, and `session lock` on the locked session
+  answered "Session is already locked" - every string this engine matches on is in the binary
+  too (`just check-strings`, 18 of 18). The session store's lock value is now
+  shared between its clones (`Arc<RwLock<…>>`, where it had been a per-clone copy written
+  back stale), and `lock`, `unlock`, `remove-lock`, `create-lock` and `info` each ask
+  `GET /pass/v1/user/session/lock/check` before acting instead of trusting the local value.
+  A locked session answers that check with the API's "session locked" code, so `unlock`
+  asks for the code on exactly the session 2.7.0 refused to. The `--idle-timeout` help now
+  says the session *locks* after that much inactivity. Every literal this engine classifies
+  on is still there; two are new, below.
 
 ### Added
 
@@ -53,8 +65,39 @@ All notable changes to this project are documented here. The format follows
   argument through where the make equivalent needed `ARGS="..."` across an expansion
   layer that stripped quotes.
 
+- **A waiting unlock prompt ends when the session is unlocked from somewhere else.** Seen on
+  2026-11-25: `protonpass-tray unlock` waiting in a terminal, the code typed into the widget,
+  and the terminal still asking. Every prompt (terminal, the tray's dialog, kdialog, zenity,
+  systemd) now watches the state file, at no API call, and gives up once it says "unlocked"
+  with a time after the prompt began; the command then exits 0. What was half typed is
+  discarded rather than left for the shell. It cannot reach `pass-cli session unlock`, which
+  waits on its own read of the terminal, nor learn of an unlock made there until a face
+  refreshes.
+
+- **`protonpass-tray set-timeout SECONDS`**, and the same in the Qt tray's menu and the Plasma
+  widget: change how long idle is too long, keeping the code. pass-cli has no command for it,
+  so the lock is removed and created again with the code the removal has just proved right.
+  A creation that fails is tried once more, and if the session is left with no lock the
+  message says so. Only on an unlocked session. Not in the GNOME extension yet.
+
+- **The Plasma widget says when something is waiting for the code**: a notification naming the
+  program and terminal, which opens the popup with the cursor in the code field. It comes
+  about five seconds after the prompt, so not to someone answering it, once per prompt, and
+  it goes when the prompt does. A waiting prompt announces itself in
+  `$XDG_RUNTIME_DIR/protonpass-tray/asking/` and is believed only while it keeps rewriting
+  its file. It names a program and never a command line, which can hold secrets. Only
+  `protonpass-tray unlock` does this: `pass-cli session unlock` tells nobody it is waiting.
+  The Qt tray needs no such thing, as it shows the dialog itself. Not in the GNOME extension.
+- **`protonpass-tray unlock --wait SECONDS`**, for a script with no terminal: it asks nothing
+  itself, has the widget say what is waiting, and waits for an unlock from there. Not a hang:
+  it fails at once unless a face is running (the widget touches `listening`, every five
+  seconds) and, for five minutes after a wait nobody answered, fails at once again.
+
 ### Changed
 
+- The icon follows Proton's browser extension: the mark alone on transparency, referenced from
+  the installed application, a black padlock outlined in white when locked, nothing over it
+  when unlocked, and no dimming for either. The open padlock now means no lock is set up.
 - A failed operation answers in **pass-cli's own words** when it has any, and only falls back
   to describing the state when it does not. Describing the state instead turned `Error locking
   session` into `No lock configured` — true, and no answer at all to someone who had just
@@ -67,6 +110,13 @@ All notable changes to this project are documented here. The format follows
   `Error persisting session`, `Error unlocking session`, `Error removing session lock` and the
   three shapes of `Error {creating,sending} … session … request`), read off the 2.5.1 binary.
   Each used to arrive as "unrecognised".
+- pass-cli 2.7.1's two new sentences are recognised. `Session is already locked` (from `lock`,
+  exit 0) is a lock, not an unreadable answer. `Error checking session lock` - the server
+  check failing before any code is read - is a failure on every command, and in particular
+  not a wrong code on `unlock`, which is what a non-zero exit in unknown words reads as there.
+- `setup` on a locked session answers EXIT_LOCKED and "unlock it first" again on 2.7.1, which
+  says `Session already has a lock` there where 2.5.1 said `Session is locked`. Taken at its
+  word it was a usage error telling the operator to remove a lock they could not yet reach.
 - "pass-cli could not read the code" is no longer classified as a wrong code. It is the one
   case the stdin fallback exists for, and calling it a wrong code both told the user the wrong
   thing and suppressed that retry — which therefore had never run.
@@ -85,6 +135,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- The Plasma widget showed the icon theme's emblem instead of its own badge: Kirigami.Icon
+  looks up even a file's name in the theme first, and Breeze has an `emblem-locked`.
+- The tray survived no caller that left while its dialog was up: answering a connection that
+  had already been deleted raised in a Qt slot, which ends the process.
 - **An unlock that could not be read reported pass-cli's prompt as the reason.** `Enter lock
   code: ` carries no newline, so it is the first thing in every captured exchange and any real
   message continues the same line. A Plasma widget spent an evening showing a red

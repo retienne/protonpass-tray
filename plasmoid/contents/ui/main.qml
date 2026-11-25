@@ -2,7 +2,7 @@
  * The KDE face of protonpass-tray. A widget, not a program: every decision is made by the
  * `protonpass-tray` command, which this installs nothing of and only ever calls.
  *
- * FIVE THINGS WORTH KNOWING BEFORE CHANGING THIS FILE
+ * SIX THINGS WORTH KNOWING BEFORE CHANGING THIS FILE
  *
  * 1. The state comes from the engine's cache FILE, never from asking the API. The Proton Pass
  *    lock is an idle timer, so a widget that polled for its icon would keep the session
@@ -29,6 +29,11 @@
  *
  * 5. Running anything from QML means Plasma5Support's executable data engine. It is a
  *    compatibility layer that Plasma 6 has shipped no declarative replacement for.
+ *
+ * 6. A prompt waiting in a terminal announces itself in asking/*.json beside the state file,
+ *    and rewrites its file while it waits. One not rewritten lately is ignored: it was killed.
+ *    The notification is in a file of its own, behind a Loader, so that a machine without
+ *    org.kde.notification loses the notification and not the widget.
  */
 
 import QtQuick
@@ -51,6 +56,16 @@ PlasmoidItem {
     property bool engineMissing: false
     property bool busy: false
     property string lastError: ""
+
+    // Prompts waiting for the code somewhere, see (6). Each is {id, who, since, alive}.
+    property var waiting: []
+    readonly property int staleAfter: 15     // seconds; asking.py's STALE_S
+    // Long enough that a person at that very terminal has answered and needs no telling.
+    readonly property int tellAfter: 4
+    property var told: ({})
+    readonly property string waitingText: waiting.length === 0 ? ""
+        : waiting[0].who + (waiting.length > 1 ? " and " + (waiting.length - 1) + " more" : "")
+          + (waiting.length > 1 ? " are" : " is") + " waiting for the lock code."
 
     // The engine's exit codes, which are its interface and not its prose: 10 locked, 11 no
     // lock, 12 not signed in. Each means "here is the state", not "something went wrong", and
@@ -90,10 +105,23 @@ PlasmoidItem {
         }
     }
 
-    // The Proton Pass application's own icon, REFERENCED from the user's icon theme and never
+    // The Proton Pass application's own icon, REFERENCED from the user's installation and never
     // shipped here; our own padlock where it is not installed. A third-party tool may say
     // which service a status is about; it may not dress up as it.
-    readonly property string baseIcon: "proton-pass"
+    //
+    // First the mark alone on transparency, the way the browser extension shows it: the
+    // launcher icon is the same mark small on a white plate, which on a panel is mostly plate.
+    readonly property string markPath: "file:///usr/lib/proton-pass/resources/assets/"
+        + "Square44x44Logo.targetsize-256_altform-unplated.png"
+    readonly property string baseIcon: markProbe.status === Image.Ready ? markPath : "proton-pass"
+    Image {
+        // Kirigami.Icon does not say whether a FILE it was given exists; this does.
+        id: markProbe
+        visible: false
+        asynchronous: true
+        source: root.markPath
+        sourceSize.width: 1
+    }
     readonly property string glyphName: {
         switch (lockState) {
         case "locked": return "object-locked";
@@ -105,14 +133,33 @@ PlasmoidItem {
     }
     readonly property string emblem: {
         switch (lockState) {
+        // As in the browser extension: a padlock when locked, the plain mark when not. An
+        // open padlock and a closed one differ too little at this size, so the open one is
+        // for "no lock set up", which would otherwise look merely unlocked.
         case "locked": return "emblem-locked";
-        case "unlocked": return "emblem-unlocked";
-        case "no-lock": return "";
+        case "unlocked": return "";
+        case "no-lock": return "emblem-unlocked";
         default: return "emblem-alert";
         }
     }
-    // At panel size a change in brightness is read before any badge is; the badge confirms it.
-    readonly property bool bright: lockState === "unlocked" || lockState === "no-lock"
+    // Dimmed is for "cannot say". Locked is an ordinary state, and the padlock says it.
+    readonly property bool bright: lockState === "unlocked" || lockState === "locked"
+                                   || lockState === "no-lock"
+
+    // pass-cli accepts 30 to 900 seconds and nothing outside it.
+    readonly property var timeouts: [
+        { label: "30 seconds", value: 30 },
+        { label: "2 minutes", value: 120 },
+        { label: "5 minutes", value: 300 },
+        { label: "10 minutes", value: 600 },
+        { label: "15 minutes", value: 900 }
+    ]
+    function timeoutIndex(seconds) {
+        for (var i = 0; i < timeouts.length; i++)
+            if (timeouts[i].value === seconds)
+                return i;
+        return -1;
+    }
 
     preferredRepresentation: compactRepresentation
     toolTipMainText: "Proton Pass"
@@ -150,6 +197,10 @@ PlasmoidItem {
             if (source.indexOf("XDG_RUNTIME_DIR") !== -1) {
                 root.statePath = out;
                 root.readState();
+                return;
+            }
+            if (source.indexOf("cat ") === 0 && source.indexOf("/asking/") !== -1) {
+                root.applyWaiting(out);      // nothing waiting is an empty answer
                 return;
             }
             if (source.indexOf("cat ") === 0) {
@@ -193,8 +244,54 @@ PlasmoidItem {
     }
 
     function readState() {
-        if (statePath !== "")
-            shell.exec("cat " + statePath);
+        if (statePath === "")
+            return;
+        shell.exec("cat " + statePath);
+        // The touch says that someone here would be told: `unlock --wait` waits only then.
+        shell.exec("cat " + statePath.replace("state.json", "asking/*.json") + " 2>/dev/null; touch "
+                   + statePath.replace("state.json", "listening"));
+    }
+
+    function applyWaiting(text) {
+        var now = Date.now() / 1000;
+        var found = [];
+        var lines = text.split("\n");
+        for (var i = 0; i < lines.length; i++) {
+            try {
+                var one = JSON.parse(lines[i]);
+                if (one["id"] && now - one["alive"] < root.staleAfter)
+                    found.push(one);
+            } catch (e) {
+                // an empty line, or one being written
+            }
+        }
+        root.waiting = found;
+
+        // Told once each, so closing the notification means "I have seen it". Not while the
+        // popup is open: it says the same thing, with the field to type in.
+        var fresh = false;
+        for (var j = 0; j < found.length; j++) {
+            if (root.told[found[j].id] || now - found[j].since < root.tellAfter)
+                continue;
+            root.told[found[j].id] = true;
+            fresh = true;
+        }
+        if (notice.item === null)
+            return;
+        if (found.length === 0 || root.expanded)
+            notice.item.close();
+        else if (fresh)
+            notice.item.tell(root.waitingText);
+    }
+
+    Loader {
+        id: notice
+        source: "Notice.qml"
+        Connections {
+            target: notice.item
+            ignoreUnknownSignals: true
+            function onWanted() { root.expanded = true; }
+        }
     }
 
     function applyState(text) {
@@ -208,7 +305,13 @@ PlasmoidItem {
         }
     }
 
-    onExpandedChanged: if (expanded) root.run("status --refresh --json")
+    onExpandedChanged: {
+        if (!expanded)
+            return;
+        if (notice.item !== null)
+            notice.item.close();
+        root.run("status --refresh --json");
+    }
 
     Component.onCompleted: shell.exec(
         "sh -c 'echo ${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/protonpass-tray/state.json'")
@@ -256,13 +359,18 @@ PlasmoidItem {
             opacity: (root.bright ? 1.0 : 0.45) * (root.busy ? 0.5 : 1.0)
         }
 
-        Kirigami.Icon {
+        Image {
             // Only over the real Proton icon: on the fallback it would be a padlock wearing
             // a padlock.
+            //
+            // An Image and not a Kirigami.Icon, which resolves even a file's NAME against the
+            // icon theme first: Breeze has an emblem-locked of its own, an orange square, and
+            // that is what stood here until 2026-11-25.
             visible: panelIcon.valid && root.emblem !== ""
-            source: Qt.resolvedUrl("../icons/" + root.emblem + ".svg")
-            width: Math.round(parent.width * 0.56)
+            source: root.emblem === "" ? "" : Qt.resolvedUrl("../icons/" + root.emblem + ".svg")
+            width: Math.round(parent.width * 0.69)
             height: width
+            sourceSize: Qt.size(width * Screen.devicePixelRatio, height * Screen.devicePixelRatio)
             anchors.right: parent.right
             anchors.bottom: parent.bottom
         }
@@ -338,6 +446,82 @@ PlasmoidItem {
                 }
             }
 
+            // --- unlocked: how long idle is too long, changed with the code -------------
+            GridLayout {
+                visible: root.lockState === "unlocked"
+                columns: 2
+                columnSpacing: Kirigami.Units.smallSpacing
+                rowSpacing: Kirigami.Units.smallSpacing
+                Layout.fillWidth: true
+
+                PlasmaComponents3.Label { text: "Lock after" }
+                PlasmaComponents3.ComboBox {
+                    id: changeBox
+                    model: root.timeouts
+                    textRole: "label"
+                    valueRole: "value"
+                    // A lock made in a terminal can have a time that is not in the list.
+                    displayText: currentIndex < 0 ? root.spell(root.idleTimeout) : currentText
+                    function follow() {
+                        currentIndex = root.timeoutIndex(root.idleTimeout);
+                    }
+                    readonly property bool changed: currentIndex >= 0
+                                                    && currentValue !== root.idleTimeout
+                    Component.onCompleted: follow()
+                    Layout.fillWidth: true
+                    Connections {
+                        target: root
+                        function onIdleTimeoutChanged() { changeBox.follow(); }
+                        function onExpandedChanged() {
+                            changeBox.follow();
+                            changeField.text = "";
+                        }
+                    }
+                }
+
+                // Only once there is something to change: the code is not needed before that.
+                PlasmaComponents3.Label {
+                    visible: changeBox.changed
+                    text: "Code"
+                }
+                RowLayout {
+                    visible: changeBox.changed
+                    spacing: Kirigami.Units.smallSpacing
+                    Layout.fillWidth: true
+
+                    PlasmaComponents3.TextField {
+                        id: changeField
+                        echoMode: TextInput.Password
+                        placeholderText: "Your lock code"
+                        inputMethodHints: Qt.ImhSensitiveData
+                        Layout.fillWidth: true
+                        onAccepted: changeButton.go()
+                    }
+                    PlasmaComponents3.Button {
+                        id: changeButton
+                        text: "Change"
+                        enabled: !root.busy && changeField.text !== ""
+                        function go() {
+                            if (changeField.text === "" || !changeBox.changed)
+                                return;
+                            root.lastError = "";
+                            root.runWithCode("set-timeout " + changeBox.currentValue,
+                                             changeField.text);
+                            changeField.text = "";
+                        }
+                        onClicked: go()
+                    }
+                }
+            }
+
+            PlasmaComponents3.Label {
+                visible: root.waitingText !== "" && root.lockState !== "unlocked"
+                text: root.waitingText
+                textFormat: Text.PlainText
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
+            }
+
             // --- locked: the code, and nothing else ------------------------------------
             RowLayout {
                 visible: root.locked || (root.lockState === "unknown" && !root.engineMissing)
@@ -351,6 +535,15 @@ PlasmoidItem {
                     inputMethodHints: Qt.ImhSensitiveData
                     Layout.fillWidth: true
                     onAccepted: unlockButton.go()
+                    // Opened from the panel or from a notification, it is to type this.
+                    onVisibleChanged: if (visible) forceActiveFocus()
+                    Connections {
+                        target: root
+                        function onExpandedChanged() {
+                            if (root.expanded && unlockField.visible)
+                                unlockField.forceActiveFocus();
+                        }
+                    }
                 }
                 PlasmaComponents3.Button {
                     id: unlockButton
@@ -396,14 +589,7 @@ PlasmoidItem {
                 PlasmaComponents3.Label { text: "Lock after" }
                 PlasmaComponents3.ComboBox {
                     id: timeoutBox
-                    // pass-cli accepts 30 to 900 seconds and nothing outside it.
-                    model: [
-                        { label: "30 seconds", value: 30 },
-                        { label: "2 minutes", value: 120 },
-                        { label: "5 minutes", value: 300 },
-                        { label: "10 minutes", value: 600 },
-                        { label: "15 minutes", value: 900 }
-                    ]
+                    model: root.timeouts
                     textRole: "label"
                     valueRole: "value"
                     currentIndex: 3

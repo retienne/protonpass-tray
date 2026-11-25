@@ -21,11 +21,12 @@ error in a deploy script, and an SSH key that will not sign. This fills that gap
 ## One engine, three faces
 
 The engine is a small Python program; each face is a thin presentation layer that runs it and
-decides nothing itself. All three do the same five things.
+decides nothing itself. All three do the same things, except that the GNOME one
+cannot change the timeout or tell you that a prompt is waiting.
 
 | | |
 | --- | --- |
-| **the command** | `protonpass-tray status\|lock\|unlock\|setup\|remove-lock` — works over SSH, in a script, on a server with no desktop |
+| **the command** | `protonpass-tray status\|lock\|unlock\|setup\|set-timeout\|remove-lock` — works over SSH, in a script, on a server with no desktop |
 | **the Qt tray** | `protonpass-tray tray` — StatusNotifierItem, so Plasma, XFCE, LXQt, Cinnamon and most Wayland panels show it |
 | **the Plasma widget** | a native KDE applet with the code field, the countdown and the setup in its popup |
 | **the GNOME extension** | GNOME removed system tray icons, so there an extension is the only way to have an indicator at all |
@@ -80,6 +81,15 @@ protonpass-tray status --refresh >/dev/null || protonpass-tray unlock || exit 1
 secret="$(pass-cli item view "pass://vault/title/password")"
 ```
 
+If the session is unlocked from a panel while `protonpass-tray unlock` is waiting in a
+terminal, the terminal stops asking and the command succeeds. On Plasma the widget also raises
+a notification that something is waiting, and for what. `pass-cli session unlock` can do
+neither, so prefer this one in scripts.
+
+With no terminal at all - a timer, an agent - `protonpass-tray unlock --wait 100` raises that
+notification and waits for you to unlock from the panel. It exits 10 at once if no panel widget
+is running to tell you, and after the time given otherwise.
+
 `status` alone is free and silent — it reads a cache and asks nothing, so a hook may call it
 on every SSH connection. `--json` adds the idle countdown.
 
@@ -112,9 +122,9 @@ quoting, and that each field is cleared the moment it is sent.
 ## About the icon
 
 Where the Proton Pass application is installed, the Qt tray and the Plasma widget use **its**
-icon as their base — dimmed when the session is locked, with a small badge in the corner, so
-the state reads across a panel at 22 pixels. Without it they fall back to a plain padlock from
-your icon theme.
+icon as their base, the way Proton's own browser extension does: the plain mark when the
+session is unlocked, a padlock over its corner when it is locked, an open one when no lock is
+set up. Without it they fall back to a plain padlock from your icon theme.
 
 That icon is *referenced* from your own installation and never shipped here: this repository
 carries no Proton artwork, and nothing that represents the project — the application icon, the
@@ -178,7 +188,8 @@ they outnumber it — all four are its own, read with `strings` on 2.5.1 and unc
 | `--idle-timeout --help` | `Time in seconds before the session auto-unlocks (min 30, max 900)` |
 
 So the timeout counts **inactivity** and the session **locks** when it runs out. The
-"auto-unlocks" line is a slip in one help string, not a description of the behaviour.
+"auto-unlocks" line is a slip in one help string, not a description of the behaviour, and
+2.7.1 corrected it: "Seconds of inactivity after which the session locks".
 
 **The lock is a standing gate — and `info` is not to be believed about it.** Observed over one
 day on a live session:

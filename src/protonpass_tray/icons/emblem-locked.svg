@@ -1,10 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- An overlay badge, not a glyph: it is drawn over an application icon at roughly half its
-     width, so on a 22px panel this is about 12px across. Everything in it is sized for that -
-     a filled disc for contrast against whatever is underneath, a white ring so it also reads
-     on a light panel, and a shackle thick enough to survive the scaling. -->
-<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
-  <circle cx="12" cy="12" r="11" fill="#1b1d20" stroke="#ffffff" stroke-width="2"/>
-  <path d="M8.4 11V9.2a3.6 3.6 0 0 1 7.2 0V11" fill="none" stroke="#ffffff" stroke-width="2.4"/>
-  <rect x="6.6" y="10.8" width="10.8" height="7.6" rx="1.6" fill="#ffffff"/>
+<!-- An overlay badge, not a glyph: it is drawn over the bottom-right corner of an application
+     icon, so on a 22px panel it is about 15px across. A black padlock in a white outline, with
+     no disc behind it: the outline is what reads on a dark panel and the black on a light one,
+     and everything else stays transparent. Closed and open differ by the shackle alone, so the
+     shackle takes half the height. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">
+  <g fill="#ffffff" stroke="#ffffff" stroke-linejoin="round">
+    <path d="M9 11V7a4 4 0 0 1 8 0v4z" stroke-width="6"/>
+    <rect x="6" y="10" width="14" height="10" rx="1.4" stroke-width="4"/>
+  </g>
+  <path d="M9 11V7a4 4 0 0 1 8 0v4" fill="none" stroke="#000000" stroke-width="2.4"/>
+  <rect x="6" y="10" width="14" height="10" rx="1.4" fill="#000000"/>
 </svg>

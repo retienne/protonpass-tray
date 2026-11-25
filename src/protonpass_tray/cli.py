@@ -25,9 +25,10 @@ import datetime
 import json
 import os
 import sys
+import time
 import traceback
 
-from . import __version__, actions, passcli, prompt, state
+from . import __version__, actions, asking, passcli, prompt, state
 from .actions import (
     EXIT_LOCKED,
     EXIT_NO_LOCK,
@@ -83,13 +84,13 @@ def _log(message: str) -> None:
         pass  # a face that cannot write its log still works
 
 
-def _code(args: argparse.Namespace, reason: str) -> str:
+def _code(args: argparse.Namespace, reason: str, done: prompt.Done | None = None) -> str:
     """Where the lock code comes from. One place, so every subcommand offers the same ways."""
     if getattr(args, "code_file", None):
         return prompt.from_file(args.code_file)
     if getattr(args, "code_stdin", False):
         return prompt.from_stdin()
-    return prompt.ask(reason)
+    return prompt.ask(reason, done=done)
 
 
 def _report(st: state.State, as_json: bool) -> None:
@@ -135,8 +136,72 @@ def cmd_lock(args: argparse.Namespace) -> int:
     return _say(actions.lock(), args.json)
 
 
+def _ask_to_unlock(args: argparse.Namespace) -> str:
+    """The code to unlock with, announced to the desktop faces while it is waited for."""
+    if getattr(args, "code_file", None) or getattr(args, "code_stdin", False):
+        return _code(args, "")  # a face handing over a code it already has: nothing waits
+    began = time.time()
+    with asking.Asking() as request:
+
+        def done() -> bool:
+            request.beat()
+            return state.unlocked_since(began)
+
+        return _code(args, "Proton Pass lock code", done)
+
+
+def _still_locked(why: str, args: argparse.Namespace) -> int:
+    outcome = actions.Outcome(EXIT_LOCKED, message=f"Still locked: {why}.", is_error=True)
+    return _say(outcome, args.json)
+
+
+def _wait_for_a_face(args: argparse.Namespace) -> int:
+    """`unlock --wait`: for a caller with no terminal. Ask nothing here; let a desktop face say
+    we are waiting, and leave it to its user to unlock. Never a hang: it needs a face that is
+    running, it ends after --wait seconds, and one that went unanswered is not repeated soon.
+    """
+    began = time.time()
+    with asking.Asking() as request:
+
+        def done() -> bool:
+            request.beat()
+            return state.unlocked_since(began)
+
+        if os.path.exists(prompt.socket_path()):
+            # The Qt tray asks in a dialog of its own, and its answer is a code or a refusal.
+            code = prompt.from_tray("Proton Pass lock code", timeout=args.wait, done=done)
+            if code:
+                return _say(actions.unlock(code), args.json)
+            if done():
+                raise prompt.Settled
+            return _still_locked("no code was given", args)
+        if not asking.listening():
+            return _still_locked("no desktop face is running that could ask for the code", args)
+        if asking.unanswered():
+            return _still_locked("nobody answered a moment ago, so not asking again yet", args)
+        print(f"Waiting up to {args.wait}s for an unlock from the desktop.", file=sys.stderr)
+        while time.time() - began < args.wait:
+            if done():
+                raise prompt.Settled
+            time.sleep(prompt.POLL_S)
+    asking.went_unanswered()
+    return _still_locked(f"nobody unlocked it within {args.wait}s", args)
+
+
 def cmd_unlock(args: argparse.Namespace) -> int:
-    return _say(actions.unlock(_code(args, "Proton Pass lock code")), args.json)
+    if args.wait is not None and not 1 <= args.wait <= 3600:
+        print("--wait must be between 1 and 3600 seconds", file=sys.stderr)
+        return EXIT_USAGE
+    try:
+        if args.wait is not None:
+            return _wait_for_a_face(args)
+        code = _ask_to_unlock(args)
+    except prompt.Settled:
+        # Another face took the code while this one was waiting for it. Success, because the
+        # caller wanted an unlocked session; said on stderr, so --json stays one object.
+        print("Unlocked from elsewhere.", file=sys.stderr)
+        return _say(actions.Outcome(EXIT_OK, state=actions.status()), args.json)
+    return _say(actions.unlock(code), args.json)
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
@@ -147,6 +212,14 @@ def cmd_setup(args: argparse.Namespace) -> int:
         return EXIT_USAGE
     code = _code(args, "Choose a lock code (a PIN is fine)")
     return _say(actions.create_lock(code, args.idle_timeout), args.json)
+
+
+def cmd_set_timeout(args: argparse.Namespace) -> int:
+    if not 30 <= args.seconds <= 900:
+        print("the timeout must be between 30 and 900 seconds", file=sys.stderr)
+        return EXIT_USAGE
+    code = _code(args, "Lock code, to change the timeout")
+    return _say(actions.set_timeout(code, args.seconds), args.json)
 
 
 def cmd_remove_lock(args: argparse.Namespace) -> int:
@@ -193,6 +266,7 @@ def build_parser() -> argparse.ArgumentParser:
             "by you (for a front-end that can only run a command line, where argv is public)",
         )
         source.add_argument("--code-stdin", action="store_true", help="read the code from stdin")
+        sub.code_source = source
         return sub
 
     status = add("status", cmd_status, "say whether the session is locked (free, from cache)")
@@ -202,7 +276,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="ask pass-cli instead of the cache; this resets the server's idle timer",
     )
     add("lock", cmd_lock, "lock the session now")
-    add_with_code("unlock", cmd_unlock, "unlock the session, asking for the code")
+    unlock = add_with_code("unlock", cmd_unlock, "unlock the session, asking for the code")
+    unlock.code_source.add_argument(
+        "--wait",
+        type=int,
+        metavar="SECONDS",
+        help="do not ask here: say on the desktop that a program is waiting, and wait this long "
+        "for an unlock from there (for a script with no terminal)",
+    )
     setup = add_with_code("setup", cmd_setup, "create the lock and set how long idle is too long")
     setup.add_argument(
         "--idle-timeout",
@@ -211,6 +292,10 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="SECONDS",
         help="30-900, pass-cli's own limits (default: 600)",
     )
+    set_timeout = add_with_code(
+        "set-timeout", cmd_set_timeout, "change how long idle is too long, keeping the code"
+    )
+    set_timeout.add_argument("seconds", type=int, metavar="SECONDS", help="30-900")
     add_with_code("remove-lock", cmd_remove_lock, "remove the lock entirely")
     add("tray", cmd_tray, "run the tray icon")
     return parser
