@@ -196,23 +196,36 @@ class TheWaitingNotice(unittest.TestCase):
 
 
 class SharedIcons(unittest.TestCase):
-    """The badges exist twice, because the widget is distributed on its own and cannot reach
+    """The glyphs exist twice, because the widget is distributed on its own and cannot reach
     into a Python package for them. Twice is fine; silently different is not."""
 
-    def test_the_plasmoid_badges_match_the_package_ones(self):
-        for name in ("locked", "unlocked", "alert"):
-            engine = ROOT / "src" / "protonpass_tray" / "icons" / f"emblem-{name}.svg"
-            widget = PLASMOID / "contents" / "icons" / f"emblem-{name}.svg"
+    GLYPHS = ("locked", "unlocked", "no-lock", "unknown")
+
+    def test_the_plasmoid_glyphs_match_the_package_ones(self):
+        for name in self.GLYPHS:
+            engine = ROOT / "src" / "protonpass_tray" / "icons" / f"protonpass-tray-{name}.svg"
+            widget = PLASMOID / "contents" / "icons" / f"protonpass-tray-{name}.svg"
             self.assertTrue(widget.is_file(), widget)
             self.assertEqual(engine.read_bytes(), widget.read_bytes(), name)
 
-    def test_the_plasmoid_badge_is_not_looked_up_in_the_icon_theme(self):
-        """Kirigami.Icon takes a file's NAME to the icon theme first, and Breeze has its own
-        emblem-locked: the badge on the panel was an orange square that is not in this
-        repository. Rendering the widget is what showed it; nothing else could."""
+    def test_every_state_the_widget_names_has_a_glyph(self):
         qml = strip_comments((PLASMOID / "contents" / "ui" / "main.qml").read_text())
-        before = qml[: qml.index('"../icons/"')]
-        self.assertGreater(before.rindex("Image {"), before.rindex("Kirigami.Icon {"))
+        block = qml[qml.index("property string glyph:") : qml.index("property bool bright:")]
+        named = set(re.findall(r'return "([a-z-]+)"', block))
+        self.assertEqual(named, set(self.GLYPHS))
+
+    def test_the_proton_mark_is_only_ever_a_badge(self):
+        """Until 2026-11-26 the icon WAS the mark, and an unlocked session sat in the panel
+        looking exactly like the Proton Pass application beside it. Every place the widget
+        draws the mark, it draws it at the badge's size, never filling the icon."""
+        qml = strip_comments((PLASMOID / "contents" / "ui" / "main.qml").read_text())
+        uses = [m.start() for m in re.finditer(r"source: root\.markSource", qml)]
+        self.assertEqual(len(uses), 2, "the badge and its cut-out")
+        for at in uses:
+            item = qml[qml.rindex("Kirigami.Icon {", 0, at) : qml.index("}", at)]
+            self.assertIn("stateIcon.badge", item)
+            self.assertNotIn("anchors.fill", item)
+        self.assertIn('"../icons/protonpass-tray-" + root.glyph', qml)
 
     def test_no_proton_artwork_is_shipped(self):
         """The Proton icon is referenced from the user's own installation, never vendored -

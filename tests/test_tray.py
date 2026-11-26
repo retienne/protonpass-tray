@@ -46,6 +46,40 @@ class TrayLogic(Harness):
         for status in self.state.Lock:
             self.assertFalse(tray.icon_for(status).isNull(), status)
 
+    def test_the_proton_mark_is_a_badge_on_our_own_glyph(self):
+        """Until 2026-11-26 the icon WAS the mark, and an unlocked session sat in the panel
+        looking exactly like the Proton Pass application. Now: our glyph in the panel's ink,
+        the mark in the top-right corner, and a gap cut between them."""
+        from PyQt6.QtGui import QColor, QIcon, QPixmap
+
+        solid = QPixmap(64, 64)
+        solid.fill(QColor("#ff0000"))
+        mark, ink, size = QIcon(solid), QColor("#00ff00"), 44
+        image = tray._compose(self.state.Lock.LOCKED, size, ink, mark).toImage()
+        badge, gap = round(size * tray.BADGE), max(1, round(size * tray.GAP))
+
+        def at(x, y):
+            return image.pixelColor(x, y)
+
+        self.assertEqual(at(size - gap - 1, gap).name(), "#ff0000", "the mark, top right")
+        self.assertEqual(at(size - badge - gap - 1, 2).alpha(), 0, "the gap beside it")
+        self.assertEqual(at(2, size // 2).name(), "#00ff00", "the glyph's frame, in the ink")
+        colours = {
+            at(x, y).name() for x in range(size) for y in range(size) if at(x, y).alpha() == 255
+        }
+        self.assertIn("#00ff00", colours)
+        # Nothing of the mark outside its corner: it is a badge, not a background.
+        for x in range(size - badge - gap):
+            for y in range(size):
+                self.assertNotEqual(at(x, y).name(), "#ff0000", (x, y))
+
+    def test_without_proton_pass_it_is_the_glyph_alone(self):
+        from PyQt6.QtGui import QColor
+
+        image = tray._compose(self.state.Lock.LOCKED, 44, QColor("#00ff00"), None).toImage()
+        corner = image.pixelColor(44 - 8, 9)  # inside the title bar, where the badge would be
+        self.assertEqual(corner.name(), "#00ff00", "the title bar, not cut")
+
     def test_the_menu_follows_the_state(self):
         self.set_stub(has_lock=True, locked=True, idle_timeout=600)
         self.state.record(self.state.Lock.LOCKED, source="a test", idle_timeout=600)

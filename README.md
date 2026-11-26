@@ -121,19 +121,23 @@ quoting, and that each field is cleared the moment it is sent.
 
 ## About the icon
 
-Where the Proton Pass application is installed, the Qt tray and the Plasma widget use **its**
-icon as their base, the way Proton's own browser extension does: the plain mark when the
-session is unlocked, a padlock over its corner when it is locked, an open one when no lock is
-set up. Without it they fall back to a plain padlock from your icon theme.
+The Qt tray and the Plasma widget draw a **terminal**, in your panel's text colour, with the
+state in its screen: a closed padlock when the session is locked, an open one when it is
+unlocked, an exclamation mark when no lock is set up, and a dimmed prompt when nothing can be
+said. Where the Proton Pass application is installed, its mark sits in the terminal's top-right
+corner as a badge, saying which service the status is about.
 
-That icon is *referenced* from your own installation and never shipped here: this repository
-carries no Proton artwork, and nothing that represents the project — the application icon, the
-entry in Plasma's widget chooser, a store listing — uses their mark. A third-party tool may say
-which service a status is about; it may not dress up as it. `tests/test_frontends.py` asserts
-the first half of that.
+Only ever as a badge. The icon used to be Proton's mark with a padlock over it, and an unlocked
+session sat in the panel looking exactly like the Proton Pass application beside it. A
+third-party tool may say which service a status is about; it may not dress up as it.
 
-The GNOME extension stays monochrome instead, because GNOME's panel is symbolic by convention
-and a full-colour app icon with a badge looks like a mistake there.
+The mark is *referenced* from your own installation and never shipped here: this repository
+carries no Proton artwork, and nothing that represents the project, from the application icon
+and the entry in Plasma's widget chooser to a store listing, uses it. Without the application
+installed you get the terminal alone. `tests/test_frontends.py` and `tests/test_tray.py` assert
+both halves.
+
+The GNOME extension draws a symbolic padlock for now, without the badge.
 
 ## Publishing the two desktop faces
 

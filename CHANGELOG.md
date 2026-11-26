@@ -95,9 +95,12 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
-- The icon follows Proton's browser extension: the mark alone on transparency, referenced from
-  the installed application, a black padlock outlined in white when locked, nothing over it
-  when unlocked, and no dimming for either. The open padlock now means no lock is set up.
+- The icon is our own: a terminal in the panel's text colour, the state in its screen (closed
+  padlock, open padlock, "!" for no lock, a dimmed prompt for unknown), with the Proton Pass
+  mark as a badge in its top-right corner where the application is installed. It had been the
+  mark itself, and an unlocked session looked exactly like the Proton Pass application beside
+  it in the panel. The mark is still referenced from the user's installation, never shipped.
+  In the Qt tray and the Plasma widget; the GNOME extension keeps its symbolic padlock.
 - A failed operation answers in **pass-cli's own words** when it has any, and only falls back
   to describing the state when it does not. Describing the state instead turned `Error locking
   session` into `No lock configured` — true, and no answer at all to someone who had just
@@ -135,8 +138,6 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
-- The Plasma widget showed the icon theme's emblem instead of its own badge: Kirigami.Icon
-  looks up even a file's name in the theme first, and Breeze has an `emblem-locked`.
 - The tray survived no caller that left while its dialog was up: answering a connection that
   had already been deleted raised in a Qt slot, which ends the process.
 - **An unlock that could not be read reported pass-cli's prompt as the reason.** `Enter lock

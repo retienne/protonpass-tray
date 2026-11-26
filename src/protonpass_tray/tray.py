@@ -27,10 +27,12 @@ import os
 import sys
 import time
 from importlib import resources
+from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QAction, QIcon, QPainter, QPixmap
+from PyQt6.QtGui import QAction, QColor, QIcon, QPainter, QPalette, QPixmap
 from PyQt6.QtNetwork import QLocalServer
+from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtWidgets import (
     QApplication,
     QInputDialog,
@@ -43,12 +45,15 @@ from PyQt6.QtWidgets import (
 from . import actions, prompt, state
 from .state import Lock
 
+if TYPE_CHECKING:
+    from importlib.abc import Traversable
+
 #: How often the cache is re-read and the countdown redrawn. Local work only.
 TICK_MS = 2000
 
 #: Where the Proton Pass application's own icon is, when it is installed. First the mark alone,
 #: on transparency, the way the browser extension shows it: the application's launcher icon is
-#: the same mark small on a white plate, which on a panel is mostly plate. Where that file is
+#: the same mark small on a white plate, which at badge size is all plate. Where that file is
 #: not, the icon theme, and then the launcher icon where Proton's .deb puts it - which the
 #: freedesktop spec calls a legacy location and Qt does not search.
 #:
@@ -56,6 +61,9 @@ TICK_MS = 2000
 #: No Proton artwork is shipped in this repository, and nothing that represents this project
 #: - the application icon, the widget in Plasma's chooser, a store listing - uses their mark.
 #: A third-party tool may say which service a status is about; it may not dress up as it.
+#: Which is why the mark is only ever a BADGE on our own glyph: until 2026-11-26 the icon was
+#: the mark itself, and an unlocked session sat in the panel looking exactly like the Proton
+#: Pass application beside it.
 PROTON_MARK_PATH = (
     "/usr/lib/proton-pass/resources/assets/Square44x44Logo.targetsize-256_altform-unplated.png"
 )
@@ -65,50 +73,31 @@ PROTON_ICON_PATHS = (
     "/usr/lib/proton-pass/resources/assets/icon.png",
 )
 
-#: Our own glyph, used alone when Proton Pass is not installed and as the emblem when it is.
-#: A freedesktop theme name is tried first for the standalone case, so it looks native.
-_ICONS = {
-    Lock.UNLOCKED: ("object-unlocked", "unlocked"),
-    Lock.LOCKED: ("object-locked", "locked"),
-    Lock.NO_LOCK: ("object-unlocked", "unlocked"),
-    Lock.NO_SESSION: ("dialog-warning", "unknown"),
-    Lock.UNKNOWN: ("dialog-question", "unknown"),
+#: Our own glyph for each state: a terminal, with the state in its screen. Never the theme's
+#: padlocks any more - the terminal is what makes this recognisably itself.
+_GLYPHS = {
+    Lock.UNLOCKED: "unlocked",
+    Lock.LOCKED: "locked",
+    Lock.NO_LOCK: "no-lock",
+    Lock.NO_SESSION: "unknown",
+    Lock.UNKNOWN: "unknown",
 }
 
-#: States drawn at full strength, as the browser extension draws both of its own: a locked
-#: session is an ordinary state, and the padlock says it. Dimmed is kept for "cannot say".
+#: States drawn at full strength. Dimmed is kept for "cannot say".
 _BRIGHT = (Lock.UNLOCKED, Lock.LOCKED, Lock.NO_LOCK)
 
-#: The badge drawn over the Proton icon. Deliberately NOT the theme's emblems: those are full
-#: icons with detail that turns to mush at the fifteen pixels this gets. UNLOCKED has none, as
-#: in the browser extension: an open padlock and a closed one differ too little at that size
-#: to be told apart across a panel, and a padlock against none does not. The open one is for
-#: NO_LOCK instead, which would otherwise look like a session that is merely unlocked.
-_EMBLEMS = {
-    Lock.NO_LOCK: "unlocked",
-    Lock.LOCKED: "locked",
-    Lock.NO_SESSION: "alert",
-    Lock.UNKNOWN: "alert",
-}
+#: How much of the icon's width the Proton mark takes, in the top-right corner over the
+#: title bar, which carries no state. And the gap cut around it, so that its purple does not
+#: run into the title bar: one pixel at panel size.
+BADGE = 0.46
+GAP = 1 / 22
 
-#: How much of the icon's width the badge takes: the browser extension's own proportion.
-BADGE = 0.69
-
-_COMPOSED: dict[Lock, QIcon] = {}
+_COMPOSED: dict[tuple[Lock, int], QIcon] = {}
 
 
-def _bundled(name: str) -> QIcon:
+def glyph_path(name: str) -> Traversable:
     # Inside the package rather than in data/, so a pipx install has them too.
-    with resources.as_file(
-        resources.files(__package__) / "icons" / f"protonpass-tray-{name}.svg"
-    ) as path:
-        return QIcon(str(path))
-
-
-def _glyph(status: Lock) -> QIcon:
-    theme_name, bundled = _ICONS[status]
-    icon = QIcon.fromTheme(theme_name)
-    return icon if not icon.isNull() else _bundled(bundled)
+    return resources.files(__package__) / "icons" / f"protonpass-tray-{name}.svg"
 
 
 def proton_icon() -> QIcon | None:
@@ -123,37 +112,53 @@ def proton_icon() -> QIcon | None:
     return None
 
 
-def icon_for(status: Lock) -> QIcon:
-    """The Proton Pass icon carrying the state, or our own glyph where it is not installed."""
-    if status in _COMPOSED:
-        return _COMPOSED[status]
-    base = proton_icon()
-    icon = _glyph(status) if base is None else _compose(base, status)
-    _COMPOSED[status] = icon
-    return icon
+def icon_for(status: Lock, ink: QColor | None = None) -> QIcon:
+    """Our terminal glyph carrying the state, badged with the Proton mark where it exists."""
+    if ink is None:
+        ink = QApplication.palette().color(QPalette.ColorRole.WindowText)
+    key = (status, ink.rgba())
+    if key not in _COMPOSED:
+        icon, mark = QIcon(), proton_icon()
+        for size in (16, 22, 24, 32, 48, 64):
+            icon.addPixmap(_compose(status, size, ink, mark))
+        _COMPOSED[key] = icon
+    return _COMPOSED[key]
 
 
-def _compose(base: QIcon, status: Lock) -> QIcon:
-    size = 64
+def _compose(status: Lock, size: int, ink: QColor, mark: QIcon | None) -> QPixmap:
     canvas = QPixmap(size, size)
     canvas.fill(Qt.GlobalColor.transparent)
     painter = QPainter(canvas)
     try:
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        painter.setOpacity(1.0 if status in _BRIGHT else 0.4)
-        painter.drawPixmap(0, 0, base.pixmap(size, size))
-        if status in _EMBLEMS:
-            painter.setOpacity(1.0)
+        # The glyph in the panel's ink: QtSvg draws currentColor black, so the SVG lays down
+        # the shape and the ink is poured into it.
+        with resources.as_file(glyph_path(_GLYPHS[status])) as path:
+            QSvgRenderer(str(path)).render(painter)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+        painter.fillRect(canvas.rect(), ink)
+        if mark is not None:
             badge = round(size * BADGE)
-            with resources.as_file(
-                resources.files(__package__) / "icons" / f"emblem-{_EMBLEMS[status]}.svg"
-            ) as path:
-                painter.drawPixmap(
-                    size - badge, size - badge, QIcon(str(path)).pixmap(badge, badge)
-                )
+            gap = max(1, round(size * GAP))
+            # The mark drawn larger first, as an eraser, leaves its own outline cut out of
+            # the title bar; then the mark itself.
+            cut = mark.pixmap(badge + 2 * gap, badge + 2 * gap)
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationOut)
+            painter.drawPixmap(size - badge - 2 * gap, 0, badge + 2 * gap, badge + 2 * gap, cut)
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+            painter.drawPixmap(size - badge - gap, gap, badge, badge, mark.pixmap(badge, badge))
     finally:
         painter.end()
-    return QIcon(canvas)
+    if status not in _BRIGHT:
+        dimmed = QPixmap(size, size)
+        dimmed.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(dimmed)
+        painter.setOpacity(0.45)
+        painter.drawPixmap(0, 0, canvas)
+        painter.end()
+        return dimmed
+    return canvas
 
 
 class _Signals(QObject):

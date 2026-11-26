@@ -37,6 +37,7 @@
  */
 
 import QtQuick
+import QtQuick.Effects
 import QtQuick.Layouts
 import org.kde.plasma.plasmoid
 import org.kde.plasma.components as PlasmaComponents3
@@ -105,15 +106,31 @@ PlasmoidItem {
         }
     }
 
-    // The Proton Pass application's own icon, REFERENCED from the user's installation and never
-    // shipped here; our own padlock where it is not installed. A third-party tool may say
-    // which service a status is about; it may not dress up as it.
+    // Our own glyph, a terminal with the state in its screen, in the panel's text colour; the
+    // same files the Qt tray draws, copied here because the widget ships on its own.
+    readonly property string glyph: {
+        switch (lockState) {
+        case "locked": return "locked";
+        case "unlocked": return "unlocked";
+        case "no-lock": return "no-lock";
+        default: return "unknown";
+        }
+    }
+    // Dimmed is for "cannot say". Locked is an ordinary state, and the padlock says it.
+    readonly property bool bright: lockState === "unlocked" || lockState === "locked"
+                                   || lockState === "no-lock"
+
+    // The Proton Pass application's own mark, REFERENCED from the user's installation and
+    // never shipped here, as a badge in the glyph's top-right corner: it says which service
+    // the status is about. Only ever a badge - until 2026-11-26 the icon WAS the mark, and an
+    // unlocked session sat in the panel looking exactly like the Proton Pass application.
+    // A third-party tool may say which service a status is about; it may not dress up as it.
     //
-    // First the mark alone on transparency, the way the browser extension shows it: the
-    // launcher icon is the same mark small on a white plate, which on a panel is mostly plate.
+    // The mark alone on transparency, the way the browser extension shows it; else the theme's
+    // proton-pass, else no badge at all.
     readonly property string markPath: "file:///usr/lib/proton-pass/resources/assets/"
         + "Square44x44Logo.targetsize-256_altform-unplated.png"
-    readonly property string baseIcon: markProbe.status === Image.Ready ? markPath : "proton-pass"
+    readonly property string markSource: markProbe.status === Image.Ready ? markPath : "proton-pass"
     Image {
         // Kirigami.Icon does not say whether a FILE it was given exists; this does.
         id: markProbe
@@ -122,29 +139,71 @@ PlasmoidItem {
         source: root.markPath
         sourceSize.width: 1
     }
-    readonly property string glyphName: {
-        switch (lockState) {
-        case "locked": return "object-locked";
-        case "unlocked": return "object-unlocked";
-        case "no-lock": return "object-unlocked";
-        case "no-session": return "dialog-warning";
-        default: return "dialog-question";
+
+    // The icon, drawn the same in the panel and in the popup's heading.
+    component StateIcon: Item {
+        id: stateIcon
+        property bool active: false
+        // The tray's BADGE and GAP: the mark takes 46 % of the width, and a one-pixel gap at
+        // panel size is cut around it, so its purple does not run into the title bar.
+        readonly property real badge: Math.round(width * 0.46)
+        readonly property real gap: Math.max(1, Math.round(width / 22))
+        readonly property bool badged: mark.valid
+        // A desktop rendered in software runs no shaders, so MultiEffect would draw nothing
+        // and leave the mark alone in the panel. There the glyph is shown as it is, uncut, and
+        // not recoloured either, as Kirigami's isMask needs a shader too: black, still legible.
+        readonly property bool shaders: GraphicsInfo.api !== GraphicsInfo.Software
+
+        Item {
+            id: art
+            anchors.fill: parent
+            visible: !stateIcon.shaders
+            layer.enabled: stateIcon.shaders
+            Kirigami.Icon {
+                // A file of our own: no icon theme carries this name, so there is nothing for
+                // Kirigami to find in its place - see the note on the badge it replaced.
+                anchors.fill: parent
+                source: Qt.resolvedUrl("../icons/protonpass-tray-" + root.glyph + ".svg")
+                isMask: true
+                color: Kirigami.Theme.textColor
+                active: stateIcon.active
+            }
+        }
+        Item {
+            // The mark drawn larger, as an eraser: what it covers is cut out of the glyph.
+            id: cutout
+            anchors.fill: parent
+            visible: false
+            layer.enabled: stateIcon.shaders
+            Kirigami.Icon {
+                source: root.markSource
+                width: stateIcon.badge + 2 * stateIcon.gap
+                height: width
+                anchors.right: parent.right
+                anchors.top: parent.top
+            }
+        }
+        MultiEffect {
+            anchors.fill: parent
+            visible: stateIcon.shaders
+            source: art
+            maskEnabled: stateIcon.badged
+            maskSource: cutout
+            maskInverted: true
+        }
+        Kirigami.Icon {
+            id: mark
+            source: root.markSource
+            fallback: ""
+            visible: valid
+            width: stateIcon.badge
+            height: width
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.rightMargin: stateIcon.gap
+            anchors.topMargin: stateIcon.gap
         }
     }
-    readonly property string emblem: {
-        switch (lockState) {
-        // As in the browser extension: a padlock when locked, the plain mark when not. An
-        // open padlock and a closed one differ too little at this size, so the open one is
-        // for "no lock set up", which would otherwise look merely unlocked.
-        case "locked": return "emblem-locked";
-        case "unlocked": return "";
-        case "no-lock": return "emblem-unlocked";
-        default: return "emblem-alert";
-        }
-    }
-    // Dimmed is for "cannot say". Locked is an ordinary state, and the padlock says it.
-    readonly property bool bright: lockState === "unlocked" || lockState === "locked"
-                                   || lockState === "no-lock"
 
     // pass-cli accepts 30 to 900 seconds and nothing outside it.
     readonly property var timeouts: [
@@ -350,29 +409,10 @@ PlasmoidItem {
         Accessible.name: root.headline
         Accessible.role: Accessible.Button
 
-        Kirigami.Icon {
-            id: panelIcon
+        StateIcon {
             anchors.fill: parent
-            source: root.baseIcon
-            fallback: root.glyphName
             active: compact.containsMouse
             opacity: (root.bright ? 1.0 : 0.45) * (root.busy ? 0.5 : 1.0)
-        }
-
-        Image {
-            // Only over the real Proton icon: on the fallback it would be a padlock wearing
-            // a padlock.
-            //
-            // An Image and not a Kirigami.Icon, which resolves even a file's NAME against the
-            // icon theme first: Breeze has an emblem-locked of its own, an orange square, and
-            // that is what stood here until 2026-11-25.
-            visible: panelIcon.valid && root.emblem !== ""
-            source: root.emblem === "" ? "" : Qt.resolvedUrl("../icons/" + root.emblem + ".svg")
-            width: Math.round(parent.width * 0.69)
-            height: width
-            sourceSize: Qt.size(width * Screen.devicePixelRatio, height * Screen.devicePixelRatio)
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
         }
 
         onPressed: wasExpanded = root.expanded
@@ -387,9 +427,8 @@ PlasmoidItem {
             RowLayout {
                 anchors.fill: parent
                 spacing: Kirigami.Units.smallSpacing
-                Kirigami.Icon {
-                    source: root.baseIcon
-                    fallback: root.glyphName
+                StateIcon {
+                    opacity: root.bright ? 1.0 : 0.45
                     Layout.preferredWidth: Kirigami.Units.iconSizes.smallMedium
                     Layout.preferredHeight: Kirigami.Units.iconSizes.smallMedium
                 }

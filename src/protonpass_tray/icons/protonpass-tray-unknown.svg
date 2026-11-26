@@ -1,8 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!-- No session, or nothing established yet: a bare prompt, drawn dimmed by the faces, as nothing can be said about the lock.
+     One glyph per state, all the same terminal: what the lock guards is a command-line
+     session. Monochrome in currentColor, which every face replaces with the panel's text
+     colour. The top-right corner is where a face may set the Proton Pass mark, taken from
+     the user's own installation, cutting it free of the title bar: it says which service
+     the status is about, and the terminal makes sure this is never taken for Proton's app. -->
 <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">
-  <!-- Nothing has been established yet: outline only, no fill, so it reads as "not known". -->
-  <g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" opacity=".55">
-    <path d="M7.4 10V7.6a3.6 3.6 0 0 1 7.2 0V10"/>
-    <rect x="4.6" y="10" width="12.8" height="8.4" rx="1.6"/>
-  </g>
+  <rect x="1.5" y="3" width="19" height="16" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.6"/>
+  <rect x="1.5" y="3" width="19" height="3.6" rx="1.6" fill="currentColor"/>
+  <path d="M5 9.6l3 2.6-3 2.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M10 15.4h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
 </svg>

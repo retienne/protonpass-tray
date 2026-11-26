@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Unlocked: the same padlock with its shackle swung clear on the left, the difference that survives at 22 px.
+     One glyph per state, all the same terminal: what the lock guards is a command-line
+     session. Monochrome in currentColor, which every face replaces with the panel's text
+     colour. The top-right corner is where a face may set the Proton Pass mark, taken from
+     the user's own installation, cutting it free of the title bar: it says which service
+     the status is about, and the terminal makes sure this is never taken for Proton's app. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">
+  <rect x="1.5" y="3" width="19" height="16" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.6"/>
+  <rect x="1.5" y="3" width="19" height="3.6" rx="1.6" fill="currentColor"/>
+  <path d="M5.4 11V10.6a2.2 2.2 0 0 1 4.4 0v1.6" fill="none" stroke="currentColor" stroke-width="1.6"/>
+  <rect x="7" y="11.8" width="8" height="5.8" rx="1.1" fill="currentColor"/>
+</svg>
